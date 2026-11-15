@@ -40,13 +40,24 @@ public class AppGenerationService {
 
     public boolean stop(Long appId) {
         Task task = tasks.get(appId);
-        if (task == null) return false;
+        if (task == null || !task.generation) return false;
         synchronized (task) {
             if (task.finished) return false;
             task.stopped = true;
             task.stopSignal.tryEmitValue(true);
             return true;
         }
+    }
+
+    /** Use the same application lock for restores and deployments as for generation. */
+    public <T> T withIdleApp(Long appId, Supplier<T> action) {
+        Task task = new Task(ignored -> {});
+        task.generation = false;
+        if (tasks.putIfAbsent(appId, task) != null) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "应用正在生成或切换版本，请稍后重试");
+        }
+        try { return action.get(); }
+        finally { tasks.remove(appId, task); }
     }
 
     private void finish(Long appId, Task task, String status) {
@@ -66,6 +77,7 @@ public class AppGenerationService {
         private final Sinks.One<Boolean> stopSignal = Sinks.one();
         private volatile boolean stopped;
         private boolean finished;
+        private boolean generation = true;
 
         private Task(Consumer<String> writeStatus) { this.writeStatus = writeStatus; }
     }

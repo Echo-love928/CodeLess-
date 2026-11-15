@@ -50,6 +50,12 @@ const formatDateTime = (value?: string) => {
 
       <div class="app-details__section-label">应用基础信息</div>
       <p>生成状态：<GenerationStatusTag :status="app?.generationStatus" /></p>
+      <p>
+        当前版本：{{ app?.version ? `V${app.version}` : '尚无版本快照'
+        }}<template v-if="isAppOnline(app) && app?.deployedVersion">
+          · 线上 V{{ app.deployedVersion }}</template
+        >
+      </p>
       <div class="detail-item detail-item--creator">
         <a-avatar :size="44" :src="app?.user?.userAvatar">
           {{ app?.user?.userName?.slice(0, 1) || '用' }}

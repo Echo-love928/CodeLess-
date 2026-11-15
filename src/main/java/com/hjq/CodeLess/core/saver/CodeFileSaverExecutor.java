@@ -34,4 +34,11 @@ public class CodeFileSaverExecutor {
             default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型: " + codeGenType);
         };
     }
+
+    public static File saveToDirectory(Object result, CodeGenTypeEnum type, File directory) {
+        return switch (type) {
+            case HTML -> htmlCodeFileSaver.saveToDirectory((HtmlCodeResult) result, directory);
+            case MULTI_FILE -> multiFileCodeFileSaver.saveToDirectory((MultiFileCodeResult) result, directory);
+        };
+    }
 }

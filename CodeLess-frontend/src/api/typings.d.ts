@@ -43,6 +43,8 @@ declare namespace API {
     codeGenType?: string
     generationStatus?: string
     deploymentStatus?: string
+    version?: number
+    deployedVersion?: number
     deployKey?: string
     deployedTime?: string
     priority?: number

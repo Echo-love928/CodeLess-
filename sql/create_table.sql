@@ -37,6 +37,8 @@ create table app
     codeGenType  varchar(64)                        null comment '代码生成类型（枚举）',
     generationStatus varchar(20) default 'pending' not null comment 'pending/generating/completed/stopped/failed/unknown',
     deploymentStatus varchar(20) default 'offline' not null comment 'online/offline',
+    version int not null default 0 comment '当前代码版本，0 表示尚无快照',
+    deployedVersion int null comment '线上代码版本',
     deployKey    varchar(64)                        null comment '部署标识',
     deployedTime datetime                           null comment '部署时间',
     priority     int      default 0                 not null comment '优先级',
@@ -49,3 +51,14 @@ create table app
     INDEX idx_appName (appName),         -- 提升基于应用名称的查询性能
     INDEX idx_userId (userId)            -- 提升基于用户 ID 的查询性能
 ) comment '应用' collate = utf8mb4_unicode_ci;
+
+create table if not exists app_version
+(
+    appId bigint not null comment '应用 ID',
+    version int not null comment '版本号',
+    parentVersion int null comment '基于哪个版本生成',
+    prompt text null comment '本次生成需求',
+    source varchar(20) not null comment 'generated/imported',
+    createTime datetime not null default CURRENT_TIMESTAMP,
+    primary key (appId, version)
+) comment '应用代码版本' collate = utf8mb4_unicode_ci;

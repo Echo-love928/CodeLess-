@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "run-p type-check \"build-only {@}\" --",
     "check:id-precision": "node scripts/check-id-precision.mjs",
+    "test:diff": "node --test scripts/test-line-diff.mjs",
     "openapi2ts": "openapi2ts",
     "preview": "vite preview",
     "build-only": "vite build",

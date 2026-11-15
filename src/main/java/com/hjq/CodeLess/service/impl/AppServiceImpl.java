@@ -20,6 +20,7 @@ import com.hjq.CodeLess.service.AppService;
 import com.hjq.CodeLess.service.AppCoverGeneratorService;
 import com.hjq.CodeLess.service.AppGenerationService;
 import com.hjq.CodeLess.service.AppDeploymentStorage;
+import com.hjq.CodeLess.service.AppVersionService;
 import com.hjq.CodeLess.service.UserService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
@@ -64,6 +65,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Resource
     private AppDeploymentStorage appDeploymentStorage;
+
+    @Resource
+    private AppVersionService appVersionService;
 
     @Value("${app.deploy.base-url}")
     private String deployBaseUrl;
@@ -152,6 +156,13 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Override
     public synchronized String deployApp(Long appId, User loginUser) {
+        App app = getOwnedApp(appId, loginUser);
+        ThrowUtils.throwIf("generating".equals(app.getGenerationStatus()), ErrorCode.OPERATION_ERROR, "请先等待生成完成或停止生成");
+        return appGenerationService.withIdleApp(appId, () -> deployCurrentVersion(appId, loginUser));
+    }
+
+    private String deployCurrentVersion(Long appId, User loginUser) {
+        appVersionService.list(appId, loginUser);
         // 1. 参数校验
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
@@ -174,6 +185,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         updateApp.setId(appId);
         updateApp.setDeployKey(deployKey);
         updateApp.setDeploymentStatus("online");
+        updateApp.setDeployedVersion(app.getVersion());
         updateApp.setDeployedTime(LocalDateTime.now());
         appDeploymentStorage.publish(app.getCodeGenType(), appId, deployKey, () ->
                 ThrowUtils.throwIf(!this.updateById(updateApp), ErrorCode.OPERATION_ERROR, "更新应用部署信息失败"));

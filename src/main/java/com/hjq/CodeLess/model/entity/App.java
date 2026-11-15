@@ -65,6 +65,12 @@ public class App implements Serializable {
     @Column("deploymentStatus")
     private String deploymentStatus;
 
+    @Column("version")
+    private Integer version;
+
+    @Column("deployedVersion")
+    private Integer deployedVersion;
+
     /**
      * 部署标识
      */

@@ -37,6 +37,10 @@ public class AppVO implements Serializable {
 
     private String deploymentStatus;
 
+    private Integer version;
+
+    private Integer deployedVersion;
+
     /**
      * 部署标识
      */

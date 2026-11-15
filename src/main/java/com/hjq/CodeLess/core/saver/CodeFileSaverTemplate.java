@@ -39,6 +39,14 @@ public abstract class CodeFileSaverTemplate<T> {
         return new File(baseDirPath);
     }
 
+    /** Write a complete generation into an isolated staging directory. */
+    public final File saveToDirectory(T result, File directory) {
+        validateInput(result);
+        FileUtil.mkdir(directory);
+        saveFiles(result, directory.getAbsolutePath());
+        return directory;
+    }
+
     /**
      * 验证输入参数（可由子类覆盖）
      *

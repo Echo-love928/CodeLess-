@@ -153,6 +153,7 @@ public class AppController {
         app.setAppName(appNameGeneratorService.generateName(initPrompt));
         app.setGenerationStatus("pending");
         app.setDeploymentStatus("offline");
+        app.setVersion(0);
         // 暂时设置为多文件生成
         app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
         // 插入数据库

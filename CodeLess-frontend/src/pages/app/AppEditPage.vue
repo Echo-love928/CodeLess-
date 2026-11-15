@@ -237,6 +237,16 @@ onMounted(loadApp)
         <div class="info-table-scroll">
           <dl class="info-grid">
             <div>
+              <dt>当前版本</dt>
+              <dd>{{ app?.version ? `V${app.version}` : '尚无版本快照' }}</dd>
+            </div>
+            <div>
+              <dt>线上版本</dt>
+              <dd>
+                {{ isAppOnline(app) && app?.deployedVersion ? `V${app.deployedVersion}` : '-' }}
+              </dd>
+            </div>
+            <div>
               <dt>应用 ID</dt>
               <dd>{{ app?.id || '-' }}</dd>
             </div>

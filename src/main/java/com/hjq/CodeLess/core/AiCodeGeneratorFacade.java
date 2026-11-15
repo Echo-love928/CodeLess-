@@ -4,10 +4,10 @@ import com.hjq.CodeLess.ai.AiCodeGeneratorService;
 import com.hjq.CodeLess.ai.model.HtmlCodeResult;
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
 import com.hjq.CodeLess.core.parser.CodeParserExecutor;
-import com.hjq.CodeLess.core.saver.CodeFileSaverExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
+import com.hjq.CodeLess.service.AppVersionService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -24,6 +24,9 @@ public class AiCodeGeneratorFacade {
     @Resource
     private AiCodeGeneratorService aiCodeGeneratorService;
 
+    @Resource
+    private AppVersionService appVersionService;
+
     /**
      * 统一入口：根据类型生成并保存代码
      *
@@ -36,14 +39,15 @@ public class AiCodeGeneratorFacade {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型为空");
         }
+        String generationPrompt = appVersionService.generationPrompt(appId, userMessage);
         return switch (codeGenTypeEnum) {
             case HTML -> {
-                HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(userMessage);
-                yield CodeFileSaverExecutor.executeSaver(result, CodeGenTypeEnum.HTML, appId);
+                HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(generationPrompt);
+                yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
-                MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(userMessage);
-                yield CodeFileSaverExecutor.executeSaver(result, CodeGenTypeEnum.MULTI_FILE, appId);
+                MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(generationPrompt);
+                yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
             default -> {
                 String errorMessage = "不支持的生成类型：" + codeGenTypeEnum.getValue();
@@ -67,13 +71,13 @@ public class AiCodeGeneratorFacade {
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateHtmlCodeTokenStream(userMessage)));
-                yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId);
+                        aiCodeGeneratorService.generateHtmlCodeTokenStream(appVersionService.generationPrompt(appId, userMessage))));
+                yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(userMessage)));
-                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId);
+                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(appVersionService.generationPrompt(appId, userMessage))));
+                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
             default -> {
                 String errorMessage = "不支持的生成类型：" + codeGenTypeEnum.getValue();
@@ -91,7 +95,7 @@ public class AiCodeGeneratorFacade {
      * @param appId       应用ID
      * @return 流式响应
      */
-    private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenType, Long appId) {
+    private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenType, Long appId, String prompt) {
         return Flux.defer(() -> {
             StringBuilder codeBuilder = new StringBuilder();
             return codeStream.doOnNext(codeBuilder::append).concatWith(Flux.defer(() -> {
@@ -99,7 +103,7 @@ public class AiCodeGeneratorFacade {
                     // 只有文件保存成功，响应流才算正常完成。
                 String completeCode = codeBuilder.toString();
                 Object parsedResult = CodeParserExecutor.executeParser(completeCode, codeGenType);
-                File savedDir = CodeFileSaverExecutor.executeSaver(parsedResult, codeGenType, appId);
+                File savedDir = appVersionService.saveGeneratedCode(parsedResult, codeGenType, appId, prompt);
                 log.info("保存成功，路径为：" + savedDir.getAbsolutePath());
                     return Flux.empty();
                 } catch (Exception e) {

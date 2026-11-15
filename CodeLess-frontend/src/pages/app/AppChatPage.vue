@@ -8,6 +8,7 @@ import {
   InfoCircleOutlined,
   PauseOutlined,
   StopOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons-vue'
 import {
   deleteApp,
@@ -26,6 +27,7 @@ import DeploymentSuccessModal from '@/components/DeploymentSuccessModal.vue'
 import AppPreviewPanel from '@/components/AppPreviewPanel.vue'
 import { isValidAppId, useAppId } from '@/utils/appId'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import AppVersionsModal from '@/components/AppVersionsModal.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import 'highlight.js/styles/github.css'
 
@@ -45,6 +47,7 @@ const deploying = ref(false)
 const deploySuccessOpen = ref(false)
 const deploymentUrl = ref('')
 const detailsOpen = ref(false)
+const versionsOpen = ref(false)
 const deleting = ref(false)
 const previewVersion = ref(0)
 const previewReady = ref(false)
@@ -375,6 +378,12 @@ const pauseDeployment = () => {
   })
 }
 
+const onVersionRestored = async () => {
+  await refreshAppStatus()
+  previewVersion.value = Date.now()
+  await checkPreview()
+}
+
 const openEditPage = async () => {
   if (!canEdit.value) {
     message.error('你没有权限修改该应用')
@@ -462,12 +471,19 @@ onBeforeUnmount(() => {
           <span>{{ app?.appName || '未命名应用' }}</span>
         </button>
         <div class="header-actions">
+          <a-tag v-if="app?.version" color="blue">当前 V{{ app.version }}</a-tag>
           <span class="generation-status" role="status" aria-atomic="true"
             ><GenerationStatusTag :status="app?.generationStatus"
           /></span>
-          <a-tag :color="isAppOnline(app) ? 'green' : 'default'">{{
-            getDeploymentLabel(app)
-          }}</a-tag>
+          <a-tag :color="isAppOnline(app) ? 'green' : 'default'"
+            >{{ getDeploymentLabel(app)
+            }}<template v-if="isAppOnline(app) && app?.deployedVersion">
+              · V{{ app.deployedVersion }}</template
+            ></a-tag
+          >
+          <a-button v-if="canEdit" @click="versionsOpen = true"
+            ><template #icon><HistoryOutlined /></template>版本历史</a-button
+          >
           <a-button @click="detailsOpen = true"
             ><template #icon><InfoCircleOutlined /></template>应用详情</a-button
           >
@@ -606,6 +622,17 @@ onBeforeUnmount(() => {
     />
 
     <DeploymentSuccessModal v-model:open="deploySuccessOpen" :url="deploymentUrl" />
+    <AppVersionsModal
+      v-if="canEdit"
+      v-model:open="versionsOpen"
+      :app-id="appId"
+      :current-version="app?.version"
+      :deployed-version="isAppOnline(app) ? app?.deployedVersion : undefined"
+      :can-restore="canChat"
+      :generating="isGenerating"
+      @restored="onVersionRestored"
+      @loaded="refreshAppStatus"
+    />
   </a-spin>
 </template>
 
