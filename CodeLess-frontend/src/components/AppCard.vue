@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ClockCircleOutlined, EyeOutlined, MessageOutlined } from '@ant-design/icons-vue'
+import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 
 defineProps<{ app: API.AppVO; featured?: boolean }>()
 
@@ -26,7 +28,7 @@ const formatDate = (value?: string) =>
       <b v-if="featured" class="featured-tag">精选</b>
       <div class="app-card__actions" aria-label="应用操作">
         <button
-          v-if="app.deployKey?.trim()"
+          v-if="isAppOnline(app)"
           class="card-action card-action--work"
           type="button"
           @click="emit('view-work', app)"
@@ -58,6 +60,10 @@ const formatDate = (value?: string) =>
             {{ app.user?.userName || '未知用户' }}
           </p>
         </div>
+      </div>
+      <div class="app-card__statuses">
+        <GenerationStatusTag :status="app.generationStatus" />
+        <a-tag :color="isAppOnline(app) ? 'green' : 'default'">{{ getDeploymentLabel(app) }}</a-tag>
       </div>
       <time class="app-card__created" :datetime="app.createTime">
         <ClockCircleOutlined /> {{ formatDate(app.createTime) }}
@@ -262,6 +268,12 @@ const formatDate = (value?: string) =>
   gap: 6px;
   color: #97a1b2;
   font-size: 12px;
+}
+.app-card__statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 12px;
 }
 @media (hover: none) {
   .app-card__cover::after {

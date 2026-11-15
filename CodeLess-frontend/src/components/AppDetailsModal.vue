@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { CalendarOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons-vue'
 import logoUrl from '@/assets/logo.png'
+import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 
 const props = defineProps<{
   open: boolean
@@ -41,12 +43,13 @@ const formatDateTime = (value?: string) => {
       <div class="app-details__heading">
         <img class="app-details__mark" :src="logoUrl" alt="" />
         <h2 id="app-details-title">{{ app?.appName || '未命名应用' }}</h2>
-        <a-tag :color="app?.deployKey ? 'green' : 'default'">
-          {{ app?.deployKey ? '已部署' : '未部署' }}
+        <a-tag :color="isAppOnline(app) ? 'green' : 'default'">
+          {{ getDeploymentLabel(app) }}
         </a-tag>
       </div>
 
       <div class="app-details__section-label">应用基础信息</div>
+      <p>生成状态：<GenerationStatusTag :status="app?.generationStatus" /></p>
       <div class="detail-item detail-item--creator">
         <a-avatar :size="44" :src="app?.user?.userAvatar">
           {{ app?.user?.userName?.slice(0, 1) || '用' }}

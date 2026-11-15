@@ -2,7 +2,6 @@ package com.hjq.CodeLess.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.hjq.CodeLess.constant.AppConstant;
@@ -19,6 +18,8 @@ import com.hjq.CodeLess.model.vo.AppVO;
 import com.hjq.CodeLess.model.vo.UserVO;
 import com.hjq.CodeLess.service.AppService;
 import com.hjq.CodeLess.service.AppCoverGeneratorService;
+import com.hjq.CodeLess.service.AppGenerationService;
+import com.hjq.CodeLess.service.AppDeploymentStorage;
 import com.hjq.CodeLess.service.UserService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
@@ -26,6 +27,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -56,6 +59,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     @Resource
     private AppCoverGeneratorService appCoverGeneratorService;
 
+    @Resource
+    private AppGenerationService appGenerationService;
+
+    @Resource
+    private AppDeploymentStorage appDeploymentStorage;
+
     @Value("${app.deploy.base-url}")
     private String deployBaseUrl;
 
@@ -64,6 +73,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         // 1. 参数校验
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "用户消息不能为空");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
         // 2. 查询应用信息
         App app = this.getById(appId);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
@@ -77,16 +87,48 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型");
         }
-        // 5. 调用 AI 生成代码
-        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(
-                message, codeGenTypeEnum, appId);
-        // 保存代码成功后再截图；使用弹性线程池，避免阻塞响应式处理线程。
-        Mono<String> coverTask = Mono.<String>fromCallable(() -> {
-                    generateAndSaveAppCover(appId, codeGenTypeStr);
-                    return null;
-                })
-                .subscribeOn(Schedulers.boundedElastic());
-        return codeStream.concatWith(coverTask);
+        return appGenerationService.generate(appId, () -> {
+            Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId);
+            Mono<String> coverTask = Mono.<String>fromRunnable(() -> generateAndSaveAppCover(appId, codeGenTypeStr))
+                    .subscribeOn(Schedulers.boundedElastic());
+            // Flush SSE headers after task registration so stop is available before the first model token.
+            return Flux.just("").concatWith(codeStream).concatWith(coverTask);
+        }, status -> updateGenerationStatus(appId, status));
+    }
+
+    private synchronized void updateGenerationStatus(Long appId, String status) {
+        App update = new App();
+        update.setId(appId);
+        update.setGenerationStatus(status);
+        ThrowUtils.throwIf(!updateById(update), ErrorCode.OPERATION_ERROR, "保存生成状态失败");
+    }
+
+    @Override
+    public boolean stopGeneration(Long appId, User loginUser) {
+        getOwnedApp(appId, loginUser);
+        appGenerationService.stop(appId);
+        // Idempotent: a generation may have completed just before the stop request.
+        return true;
+    }
+
+    private App getOwnedApp(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 无效");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
+        App app = getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "仅应用所有者可以执行此操作");
+        return app;
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void recoverGenerationStatuses() {
+        // This project runs one backend instance. A process restart interrupts its active generations.
+        for (App app : list(QueryWrapper.create().in("generationStatus", "unknown", "generating"))) {
+            boolean hasCode = new File(AppConstant.CODE_OUTPUT_ROOT_DIR,
+                    app.getCodeGenType() + "_" + app.getId() + "/index.html").isFile();
+            updateGenerationStatus(app.getId(), "generating".equals(app.getGenerationStatus())
+                    ? "failed" : hasCode ? "completed" : "pending");
+        }
     }
 
     /**
@@ -109,7 +151,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     }
 
     @Override
-    public String deployApp(Long appId, User loginUser) {
+    public synchronized String deployApp(Long appId, User loginUser) {
         // 1. 参数校验
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 ID 不能为空");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR, "用户未登录");
@@ -120,37 +162,35 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         if (!app.getUserId().equals(loginUser.getId())) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限部署该应用");
         }
+        ThrowUtils.throwIf("generating".equals(app.getGenerationStatus()), ErrorCode.OPERATION_ERROR, "请先等待生成完成或停止生成");
         // 4. 检查是否已有 deployKey
         String deployKey = app.getDeployKey();
         // 没有则生成 6 位 deployKey（大小写字母 + 数字）
         if (StrUtil.isBlank(deployKey)) {
             deployKey = RandomUtil.randomString(6);
         }
-        // 5. 获取代码生成类型，构建源目录路径
-        String codeGenType = app.getCodeGenType();
-        String sourceDirName = codeGenType + "_" + appId;
-        String sourceDirPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + sourceDirName;
-        // 6. 检查源目录是否存在
-        File sourceDir = new File(sourceDirPath);
-        if (!sourceDir.exists() || !sourceDir.isDirectory()) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "应用代码不存在，请先生成代码");
-        }
-        // 7. 复制文件到部署目录
-        String deployDirPath = AppConstant.CODE_DEPLOY_ROOT_DIR + File.separator + deployKey;
-        try {
-            FileUtil.copyContent(sourceDir, new File(deployDirPath), true);
-        } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "部署失败：" + e.getMessage());
-        }
         // 8. 更新应用的 deployKey 和部署时间
         App updateApp = new App();
         updateApp.setId(appId);
         updateApp.setDeployKey(deployKey);
+        updateApp.setDeploymentStatus("online");
         updateApp.setDeployedTime(LocalDateTime.now());
-        boolean updateResult = this.updateById(updateApp);
-        ThrowUtils.throwIf(!updateResult, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
+        appDeploymentStorage.publish(app.getCodeGenType(), appId, deployKey, () ->
+                ThrowUtils.throwIf(!this.updateById(updateApp), ErrorCode.OPERATION_ERROR, "更新应用部署信息失败"));
         // 9. 返回可访问的 URL
         return String.format("%s/%s/", StrUtil.removeSuffix(deployBaseUrl.trim(), "/"), deployKey);
+    }
+
+    @Override
+    public synchronized boolean undeployApp(Long appId, User loginUser) {
+        App app = getOwnedApp(appId, loginUser);
+        App update = new App();
+        update.setId(appId);
+        update.setDeploymentStatus("offline");
+        Runnable persist = () -> ThrowUtils.throwIf(!updateById(update), ErrorCode.OPERATION_ERROR, "保存部署状态失败");
+        if (StrUtil.isNotBlank(app.getDeployKey())) appDeploymentStorage.pause(app.getDeployKey(), persist);
+        else persist.run();
+        return true;
     }
 
 
@@ -183,7 +223,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         Map<Long, UserVO> userVOMap = userService.listByIds(userIds).stream()
                 .collect(Collectors.toMap(User::getId, userService::getUserVO));
         return appList.stream().map(app -> {
-            AppVO appVO = getAppVO(app);
+            AppVO appVO = new AppVO();
+            BeanUtil.copyProperties(app, appVO);
             UserVO userVO = userVOMap.get(app.getUserId());
             appVO.setUser(userVO);
             return appVO;

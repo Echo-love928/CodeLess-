@@ -7,6 +7,8 @@ import AppCard from '@/components/AppCard.vue'
 import { addApp, listGoodAppVoByPage, listMyAppVoByPage } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { getDeployUrl } from '@/config/urls'
+import { isAppOnline } from '@/utils/appStatus'
+import { useAppStatusPolling } from '@/composables/useAppStatusPolling'
 
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
@@ -144,10 +146,11 @@ const openConversation = (app: API.AppVO) => {
 }
 const openDeployedApp = (app: API.AppVO) => {
   const deployKey = app.deployKey?.trim()
-  if (!deployKey) return
+  if (!deployKey || !isAppOnline(app)) return
   window.open(getDeployUrl(deployKey), '_blank', 'noopener,noreferrer')
 }
 onMounted(() => void Promise.all([loadMyApps(), loadGoodApps()]))
+useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
 </script>
 
 <template>

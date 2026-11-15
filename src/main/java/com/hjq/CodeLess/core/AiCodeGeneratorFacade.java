@@ -66,11 +66,13 @@ public class AiCodeGeneratorFacade {
         }
         return switch (codeGenTypeEnum) {
             case HTML -> {
-                Flux<String> codeStream = aiCodeGeneratorService.generateHtmlCodeStream(userMessage);
+                Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
+                        aiCodeGeneratorService.generateHtmlCodeTokenStream(userMessage)));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId);
             }
             case MULTI_FILE -> {
-                Flux<String> codeStream = aiCodeGeneratorService.generateMultiFileCodeStream(userMessage);
+                Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
+                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(userMessage)));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId);
             }
             default -> {

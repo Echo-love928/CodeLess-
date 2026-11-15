@@ -35,6 +35,8 @@ create table app
     cover        varchar(512)                       null comment '应用封面',
     initPrompt   text                               null comment '应用初始化的 prompt',
     codeGenType  varchar(64)                        null comment '代码生成类型（枚举）',
+    generationStatus varchar(20) default 'pending' not null comment 'pending/generating/completed/stopped/failed/unknown',
+    deploymentStatus varchar(20) default 'offline' not null comment 'online/offline',
     deployKey    varchar(64)                        null comment '部署标识',
     deployedTime datetime                           null comment '部署时间',
     priority     int      default 0                 not null comment '优先级',

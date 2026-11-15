@@ -35,6 +35,10 @@ public interface AppService extends IService<App> {
      */
     String deployApp(Long appId, User loginUser);
 
+    boolean stopGeneration(Long appId, User loginUser);
+
+    boolean undeployApp(Long appId, User loginUser);
+
 
     /**
      * 获取应用封装类

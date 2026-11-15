@@ -1,9 +1,22 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
-import { ArrowUpOutlined, CloudUploadOutlined, InfoCircleOutlined } from '@ant-design/icons-vue'
-import { deleteApp, deleteAppByAdmin, deployApp, getAppVoById } from '@/api/appController'
+import {
+  ArrowUpOutlined,
+  CloudUploadOutlined,
+  InfoCircleOutlined,
+  PauseOutlined,
+  StopOutlined,
+} from '@ant-design/icons-vue'
+import {
+  deleteApp,
+  deleteAppByAdmin,
+  deployApp,
+  getAppVoById,
+  stopAppGeneration,
+  undeployApp,
+} from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { renderMarkdown } from '@/utils/markdown'
 import { API_BASE_URL, PREVIEW_BASE_URL } from '@/config/urls'
@@ -12,6 +25,8 @@ import AppDetailsModal from '@/components/AppDetailsModal.vue'
 import DeploymentSuccessModal from '@/components/DeploymentSuccessModal.vue'
 import AppPreviewPanel from '@/components/AppPreviewPanel.vue'
 import { isValidAppId, useAppId } from '@/utils/appId'
+import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import 'highlight.js/styles/github.css'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; renderedContent?: string }
@@ -23,6 +38,9 @@ const chatMessages = ref<ChatMessage[]>([])
 const inputMessage = ref('')
 const loading = ref(true)
 const generating = ref(false)
+const generationAccepted = ref(false)
+const stopping = ref(false)
+const pausing = ref(false)
 const deploying = ref(false)
 const deploySuccessOpen = ref(false)
 const deploymentUrl = ref('')
@@ -43,6 +61,9 @@ let abortController: AbortController | undefined
 let generationStageTimer: number | undefined
 let markdownRenderTimer: number | undefined
 let pendingMarkdownMessage: ChatMessage | undefined
+let statusTimer: number | undefined
+let statusRequestPending = false
+let disposed = false
 
 const appId = useAppId()
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
@@ -51,6 +72,14 @@ const canChat = computed(
   () => Boolean(loginUserStore.loginUser.id) && loginUserStore.loginUser.id === app.value?.userId,
 )
 const isViewMode = computed(() => route.query.view === '1')
+const isGenerating = computed(
+  () => generating.value || app.value?.generationStatus === 'generating',
+)
+const canStop = computed(
+  () =>
+    canChat.value &&
+    (generating.value ? generationAccepted.value : app.value?.generationStatus === 'generating'),
+)
 const staticKey = computed(() =>
   app.value?.codeGenType && app.value.id ? `${app.value.codeGenType}_${app.value.id}` : '',
 )
@@ -137,7 +166,7 @@ const appendSseEvent = (event: string, assistant: ChatMessage) => {
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trimStart())
     .join('\n')
-  if (eventName === 'done') return
+  if (eventName === 'done' || eventName === 'stopped') return eventName
   if (eventName === 'error') throw new Error(decodeEventData(data) || '代码生成失败')
   if (data && data !== '[DONE]') {
     assistant.content += decodeEventData(data)
@@ -167,13 +196,58 @@ const loadApp = async () => {
   }
 }
 
+const refreshAppStatus = async () => {
+  if (statusRequestPending || disposed) return
+  statusRequestPending = true
+  try {
+    const res = await getAppVoById({ id: appId.value })
+    if (disposed || res.data.code !== 0 || !res.data.data) return
+    const previousStatus = app.value?.generationStatus
+    app.value = res.data.data
+    if (
+      !generating.value &&
+      previousStatus === 'generating' &&
+      app.value.generationStatus !== 'generating'
+    ) {
+      previewVersion.value = Date.now()
+      await checkPreview()
+    }
+  } finally {
+    statusRequestPending = false
+  }
+}
+
+watch(isGenerating, (active) => {
+  window.clearInterval(statusTimer)
+  statusTimer = active
+    ? window.setInterval(() => {
+        void refreshAppStatus().catch(() => {})
+      }, 2000)
+    : undefined
+})
+
+const stopGeneration = async () => {
+  if (!canStop.value || stopping.value) return
+  stopping.value = true
+  try {
+    const res = await stopAppGeneration({ appId: appId.value })
+    if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '停止失败')
+    await refreshAppStatus()
+    if (!generating.value) await checkPreview()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '无法停止生成，请重试')
+  } finally {
+    stopping.value = false
+  }
+}
+
 const sendMessage = async (preset?: string) => {
   if (!canChat.value) {
     message.warning('无法在别人的作品下对话哦~')
     return
   }
   const content = (preset ?? inputMessage.value).trim()
-  if (!content || generating.value) return
+  if (!content || isGenerating.value) return
   const hasExistingWebsite = previewReady.value
   const requestContent =
     hasExistingWebsite && app.value?.initPrompt
@@ -185,11 +259,17 @@ const sendMessage = async (preset?: string) => {
   )
   inputMessage.value = ''
   generating.value = true
+  generationAccepted.value = false
   previewReady.value = false
   startGenerationStages()
   await scrollToBottom(true)
   const assistant = chatMessages.value[chatMessages.value.length - 1]!
   abortController = new AbortController()
+  let outcome: 'done' | 'stopped' | undefined
+  const consumeEvent = (event: string) => {
+    const result = appendSseEvent(event, assistant)
+    if (result) outcome = result
+  }
   try {
     const url = new URL(`${API_BASE_URL}/app/chat/gen/code`)
     url.searchParams.set('appId', appId.value)
@@ -200,6 +280,12 @@ const sendMessage = async (preset?: string) => {
       signal: abortController.signal,
     })
     if (!response.ok || !response.body) throw new Error(`请求失败（${response.status}）`)
+    if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+      const result = await response.json()
+      throw new Error(result.message || '生成请求失败')
+    }
+    generationAccepted.value = true
+    if (app.value) app.value.generationStatus = 'generating'
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -208,15 +294,21 @@ const sendMessage = async (preset?: string) => {
       buffer += decoder.decode(value, { stream: !done })
       const events = buffer.split(/\r?\n\r?\n/)
       buffer = events.pop() ?? ''
-      for (const event of events) appendSseEvent(event, assistant)
+      for (const event of events) consumeEvent(event)
       await scrollToBottom()
       if (done) break
     }
-    if (buffer.trim()) appendSseEvent(buffer, assistant)
+    if (buffer.trim()) consumeEvent(buffer)
+    if (outcome === 'stopped') {
+      assistant.content += '\n\n生成已停止。你可以调整需求后重新生成。'
+      scheduleMarkdownRender(assistant)
+      message.info('生成已停止')
+      return
+    }
+    if (outcome !== 'done') throw new Error('生成连接中断，请重试')
     if (!assistant.content) assistant.content = '网站已生成完成，可以在右侧查看效果。'
     scheduleMarkdownRender(assistant)
     previewVersion.value = Date.now()
-    await loadApp()
     await checkPreview()
     if (!previewReady.value) throw new Error('代码生成完成，但没有找到可预览的网站文件')
   } catch (error) {
@@ -229,11 +321,17 @@ const sendMessage = async (preset?: string) => {
     generating.value = false
     stopGenerationStages()
     abortController = undefined
+    generationAccepted.value = false
+    if (!disposed) {
+      await refreshAppStatus().catch(() => {})
+      if (outcome !== 'done') await checkPreview()
+    }
     await scrollToBottom()
   }
 }
 
 const deploy = async () => {
+  if (!canChat.value || isGenerating.value || !previewReady.value) return
   deploying.value = true
   try {
     const res = await deployApp({ appId: appId.value })
@@ -248,6 +346,33 @@ const deploy = async () => {
   } finally {
     deploying.value = false
   }
+}
+
+const pauseDeployment = () => {
+  if (!canChat.value || pausing.value) return
+  Modal.confirm({
+    centered: true,
+    title: '暂停部署？',
+    content: '下线后，访客将无法通过部署地址访问应用。代码和预览会保留，之后可以重新上线。',
+    okText: '确认下线',
+    cancelText: '取消',
+    async onOk() {
+      pausing.value = true
+      try {
+        const res = await undeployApp({ appId: appId.value })
+        if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '下线失败')
+        deploySuccessOpen.value = false
+        deploymentUrl.value = ''
+        await refreshAppStatus()
+        message.success('应用已下线，可随时重新部署')
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '下线失败，请重试')
+        throw error
+      } finally {
+        pausing.value = false
+      }
+    },
+  })
 }
 
 const openEditPage = async () => {
@@ -296,7 +421,12 @@ const deleteCurrentApp = () => {
 onMounted(async () => {
   await loadApp()
   await checkPreview()
-  if (!isViewMode.value && route.query.auto === '1' && app.value?.initPrompt) {
+  if (
+    !isViewMode.value &&
+    route.query.auto === '1' &&
+    app.value?.initPrompt &&
+    !isGenerating.value
+  ) {
     const key = `codeless:auto-generated:${appId.value}`
     if (!sessionStorage.getItem(key)) {
       sessionStorage.setItem(key, '1')
@@ -306,6 +436,17 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  disposed = true
+  window.clearInterval(statusTimer)
+  if (generating.value && generationAccepted.value) {
+    void fetch(`${API_BASE_URL}/app/chat/stop`, {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appId: appId.value }),
+    }).catch(() => {})
+  }
   abortController?.abort()
   stopGenerationStages()
   window.clearTimeout(markdownRenderTimer)
@@ -321,11 +462,30 @@ onBeforeUnmount(() => {
           <span>{{ app?.appName || '未命名应用' }}</span>
         </button>
         <div class="header-actions">
+          <span class="generation-status" role="status" aria-atomic="true"
+            ><GenerationStatusTag :status="app?.generationStatus"
+          /></span>
+          <a-tag :color="isAppOnline(app) ? 'green' : 'default'">{{
+            getDeploymentLabel(app)
+          }}</a-tag>
           <a-button @click="detailsOpen = true"
             ><template #icon><InfoCircleOutlined /></template>应用详情</a-button
           >
-          <a-button type="primary" :loading="deploying" @click="deploy"
-            ><template #icon><CloudUploadOutlined /></template>部署</a-button
+          <a-button
+            v-if="canChat && isAppOnline(app)"
+            :loading="pausing"
+            :disabled="deploying"
+            @click="pauseDeployment"
+            ><template #icon><PauseOutlined /></template>下线</a-button
+          >
+          <a-button
+            v-if="canChat"
+            type="primary"
+            :loading="deploying"
+            :disabled="isGenerating || !previewReady || pausing"
+            @click="deploy"
+            ><template #icon><CloudUploadOutlined /></template
+            >{{ isAppOnline(app) ? '更新部署' : app?.deployKey ? '重新上线' : '部署' }}</a-button
           >
         </div>
       </header>
@@ -397,15 +557,22 @@ onBeforeUnmount(() => {
                 <span>{{
                   !canChat
                     ? '无法在别人的作品下对话哦~'
-                    : generating
-                      ? 'AI 正在生成，请稍候…'
+                    : isGenerating
+                      ? 'AI 正在生成，可随时停止'
                       : 'Enter 发送，Shift + Enter 换行'
                 }}</span
                 ><a-button
+                  v-if="isGenerating"
+                  danger
+                  :loading="stopping"
+                  :disabled="!canStop"
+                  @click="stopGeneration"
+                  ><template #icon><StopOutlined /></template>停止生成</a-button
+                ><a-button
+                  v-else
                   type="primary"
                   shape="circle"
-                  :disabled="!canChat || !inputMessage.trim() || generating"
-                  :loading="generating"
+                  :disabled="!canChat || !inputMessage.trim()"
                   aria-label="发送消息"
                   @click="sendMessage()"
                   ><template #icon><ArrowUpOutlined /></template
@@ -418,7 +585,7 @@ onBeforeUnmount(() => {
         <AppPreviewPanel
           :url="previewUrl"
           :ready="previewReady"
-          :generating="generating"
+          :generating="isGenerating"
           :version="previewVersion"
           :app-name="app?.appName"
           :stage="generationStage"
@@ -444,6 +611,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chat-page {
+  display: flex;
+  flex-direction: column;
   height: calc(100dvh - 64px);
   min-height: 650px;
   overflow: hidden;
@@ -454,8 +623,11 @@ onBeforeUnmount(() => {
 }
 .chat-page__header {
   display: flex;
-  height: 56px;
-  padding: 0 16px;
+  min-height: 56px;
+  padding: 10px 16px;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #e8edf4;
@@ -482,10 +654,13 @@ onBeforeUnmount(() => {
 .header-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 .workspace {
   display: grid;
-  height: calc(100% - 56px);
+  flex: 1;
+  min-height: 0;
   grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
 }
 .conversation {

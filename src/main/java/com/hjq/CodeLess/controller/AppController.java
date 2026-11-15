@@ -17,6 +17,7 @@ import com.hjq.CodeLess.model.entity.User;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.model.vo.AppVO;
 import com.hjq.CodeLess.service.UserService;
+import com.hjq.CodeLess.service.AppNameGeneratorService;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
@@ -32,6 +33,7 @@ import reactor.core.publisher.Mono;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 
 /**
  * 应用 控制层。
@@ -47,6 +49,9 @@ public class AppController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private AppNameGeneratorService appNameGeneratorService;
 
     /**
      * 应用聊天生成代码（流式 SSE）
@@ -86,7 +91,7 @@ public class AppController {
                 ))
                 .onErrorResume(error -> Flux.just(
                         ServerSentEvent.<String>builder()
-                                .event("error")
+                                .event(error instanceof CancellationException ? "stopped" : "error")
                                 .data(JSONUtil.toJsonStr(Map.of(
                                         "message", error.getMessage() == null ? "代码生成失败" : error.getMessage()
                                 )))
@@ -113,6 +118,18 @@ public class AppController {
         return ResultUtils.success(deployUrl);
     }
 
+    @PostMapping("/chat/stop")
+    public BaseResponse<Boolean> stopGeneration(@RequestBody AppDeployRequest body, HttpServletRequest request) {
+        ThrowUtils.throwIf(body == null, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appService.stopGeneration(body.getAppId(), userService.getLoginUser(request)));
+    }
+
+    @PostMapping("/undeploy")
+    public BaseResponse<Boolean> undeployApp(@RequestBody AppDeployRequest body, HttpServletRequest request) {
+        ThrowUtils.throwIf(body == null, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appService.undeployApp(body.getAppId(), userService.getLoginUser(request)));
+    }
+
 
     /**
      * 创建应用
@@ -133,8 +150,9 @@ public class AppController {
         App app = new App();
         BeanUtil.copyProperties(appAddRequest, app);
         app.setUserId(loginUser.getId());
-        // 应用名称暂时为 initPrompt 前 12 位
-        app.setAppName(initPrompt.substring(0, Math.min(initPrompt.length(), 12)));
+        app.setAppName(appNameGeneratorService.generateName(initPrompt));
+        app.setGenerationStatus("pending");
+        app.setDeploymentStatus("offline");
         // 暂时设置为多文件生成
         app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
         // 插入数据库

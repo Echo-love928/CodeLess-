@@ -14,6 +14,8 @@ import { useLoginUserStore } from '@/stores/loginUser'
 import { getDeployUrl } from '@/config/urls'
 import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { isValidAppId, useAppId } from '@/utils/appId'
+import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 
 type EditForm = {
   appName: string
@@ -36,7 +38,7 @@ const hasPermission = computed(
 )
 const deployUrl = computed(() => {
   const deployKey = app.value?.deployKey?.trim()
-  return deployKey ? getDeployUrl(deployKey) : ''
+  return deployKey && isAppOnline(app.value) ? getDeployUrl(deployKey) : ''
 })
 
 const formatDateTime = (value?: string) => {
@@ -136,9 +138,12 @@ onMounted(loadApp)
             <h2>基本信息</h2>
             <p>这些信息会展示在首页应用卡片上。</p>
           </div>
-          <a-tag :color="app?.deployKey ? 'green' : 'default'">{{
-            app?.deployKey ? '已部署' : '未部署'
-          }}</a-tag>
+          <div>
+            <GenerationStatusTag :status="app?.generationStatus" /><a-tag
+              :color="isAppOnline(app) ? 'green' : 'default'"
+              >{{ getDeploymentLabel(app) }}</a-tag
+            >
+          </div>
         </div>
         <div class="form-content">
           <a-form-item
@@ -261,7 +266,7 @@ onMounted(loadApp)
               <dd>
                 <a v-if="deployUrl" :href="deployUrl" target="_blank" rel="noopener noreferrer"
                   >查看已部署作品</a
-                ><span v-else>尚未部署</span>
+                ><span v-else>{{ getDeploymentLabel(app) }}</span>
               </dd>
             </div>
           </dl>
