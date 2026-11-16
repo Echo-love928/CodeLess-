@@ -42,6 +42,15 @@ public class App implements Serializable {
     @Column("appName")
     private String appName;
 
+    private String description;
+    private String tags;
+    private String visibility;
+    @Column("featureStatus") private String featureStatus;
+    @Column("featureRequestMessage") private String featureRequestMessage;
+    @Column("featureReviewMessage") private String featureReviewMessage;
+    @Column("featureRequestedTime") private LocalDateTime featureRequestedTime;
+    @Column("featureReviewedTime") private LocalDateTime featureReviewedTime;
+
     /**
      * 应用封面
      */

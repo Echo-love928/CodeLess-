@@ -28,6 +28,23 @@ class AppDeploymentStorageTest {
     }
 
     @Test
+    void pauseMovesBackupOutsidePublicRootBeforePersisting() throws Exception {
+        Path output = temp.resolve("output");
+        Path deploy = temp.resolve("deploy");
+        Files.createDirectories(output.resolve("html_123"));
+        Files.writeString(output.resolve("html_123/index.html"), "private after save");
+        var storage = new AppDeploymentStorage(output, deploy);
+        storage.publish("html", 123L, "abc123");
+        storage.pause("abc123", () -> {
+            try (var published = Files.list(deploy); var backup = Files.list(temp.resolve("deploy.work"))) {
+                assertEquals(0, published.count());
+                assertEquals(1, backup.count());
+            } catch (java.io.IOException error) { throw new RuntimeException(error); }
+        });
+        assertFalse(Files.exists(deploy.resolve("abc123")));
+    }
+
+    @Test
     void rejectsDeploymentKeyOutsideRoot() throws Exception {
         var storage = new AppDeploymentStorage(temp.resolve("output"), temp.resolve("deploy"));
         Path sentinel = Files.writeString(temp.resolve("important"), "keep");

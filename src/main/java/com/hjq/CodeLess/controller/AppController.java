@@ -18,6 +18,10 @@ import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.model.vo.AppVO;
 import com.hjq.CodeLess.service.UserService;
 import com.hjq.CodeLess.service.AppNameGeneratorService;
+import com.hjq.CodeLess.service.AppAccessPolicy;
+import com.hjq.CodeLess.service.AppMetadataService;
+import com.hjq.CodeLess.service.AppSearchService;
+import com.hjq.CodeLess.service.AppBrowseLimiter;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
@@ -52,6 +56,10 @@ public class AppController {
 
     @Resource
     private AppNameGeneratorService appNameGeneratorService;
+    @Resource private AppAccessPolicy appAccessPolicy;
+    @Resource private AppMetadataService appMetadataService;
+    @Resource private AppSearchService appSearchService;
+    @Resource private AppBrowseLimiter appBrowseLimiter;
 
     /**
      * 应用聊天生成代码（流式 SSE）
@@ -142,7 +150,7 @@ public class AppController {
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
         // 参数校验
-        String initPrompt = appAddRequest.getInitPrompt();
+        String initPrompt = com.hjq.CodeLess.service.AppMetadataRules.text(appAddRequest.getInitPrompt(), 2000, "初始描述");
         ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
         // 获取当前登录用户
         User loginUser = userService.getLoginUser(request);
@@ -150,6 +158,8 @@ public class AppController {
         App app = new App();
         BeanUtil.copyProperties(appAddRequest, app);
         app.setUserId(loginUser.getId());
+        appMetadataService.initialize(app, appAddRequest);
+        app.setInitPrompt(initPrompt);
         app.setAppName(appNameGeneratorService.generateName(initPrompt));
         app.setGenerationStatus("pending");
         app.setDeploymentStatus("offline");
@@ -171,27 +181,8 @@ public class AppController {
      */
     @PostMapping("/update")
     public BaseResponse<Boolean> updateApp(@RequestBody AppUpdateRequest appUpdateRequest, HttpServletRequest request) {
-        if (appUpdateRequest == null || appUpdateRequest.getId() == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR);
-        }
-        User loginUser = userService.getLoginUser(request);
-        long id = appUpdateRequest.getId();
-        // 判断是否存在
-        App oldApp = appService.getById(id);
-        ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
-        // 仅本人可更新
-        if (!oldApp.getUserId().equals(loginUser.getId())) {
-            throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
-        }
-        App app = new App();
-        app.setId(id);
-        app.setAppName(appUpdateRequest.getAppName());
-        app.setCover(appUpdateRequest.getCover());
-        // 设置编辑时间
-        app.setEditTime(LocalDateTime.now());
-        boolean result = appService.updateById(app);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
-        return ResultUtils.success(true);
+        ThrowUtils.throwIf(appUpdateRequest == null, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appMetadataService.update(appUpdateRequest, null, userService.getLoginUser(request), false));
     }
 
     /**
@@ -203,19 +194,13 @@ public class AppController {
      */
     @PostMapping("/delete")
     public BaseResponse<Boolean> deleteApp(@RequestBody DeleteRequest deleteRequest, HttpServletRequest request) {
-        if (deleteRequest == null || deleteRequest.getId() <= 0) {
+        if (deleteRequest == null || deleteRequest.getId() == null || deleteRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         User loginUser = userService.getLoginUser(request);
         long id = deleteRequest.getId();
-        // 判断是否存在
-        App oldApp = appService.getById(id);
-        ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
-        // 仅本人或管理员可删除
-        if (!oldApp.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole())) {
-            throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
-        }
-        boolean result = appService.removeById(id);
+        // 所有权检查、关联数据和文件清理由服务统一处理。
+        boolean result = appService.deleteApp(id, loginUser);
         return ResultUtils.success(result);
     }
 
@@ -226,13 +211,13 @@ public class AppController {
      * @return 应用详情
      */
     @GetMapping("/get/vo")
-    public BaseResponse<AppVO> getAppVOById(long id) {
+    public BaseResponse<AppVO> getAppVOById(long id, HttpServletRequest request) {
         ThrowUtils.throwIf(id <= 0, ErrorCode.PARAMS_ERROR);
-        // 查询数据库
+        User viewer = userService.getLoginUserOptional(request);
+        limitBrowse(request, viewer, "detail", 120);
         App app = appService.getById(id);
-        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR);
-        // 获取封装类（包含用户信息）
-        return ResultUtils.success(appService.getAppVO(app));
+        appAccessPolicy.requireView(app, viewer);
+        return ResultUtils.success(appAccessPolicy.redact(appService.getAppVO(app), app, viewer));
     }
 
 
@@ -245,21 +230,8 @@ public class AppController {
      */
     @PostMapping("/my/list/page/vo")
     public BaseResponse<Page<AppVO>> listMyAppVOByPage(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
-        ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR);
-        User loginUser = userService.getLoginUser(request);
-        // 限制每页最多 20 个
-        long pageSize = appQueryRequest.getPageSize();
-        ThrowUtils.throwIf(pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
-        long pageNum = appQueryRequest.getPageNum();
-        // 只查询当前用户的应用
-        appQueryRequest.setUserId(loginUser.getId());
-        QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
-        Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 数据封装
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+        User viewer = userService.getLoginUser(request);
+        return ResultUtils.success(toViews(appSearchService.search(appQueryRequest, viewer, AppSearchService.Scope.MINE, false), viewer));
     }
 
     /**
@@ -269,22 +241,10 @@ public class AppController {
      * @return 精选应用列表
      */
     @PostMapping("/good/list/page/vo")
-    public BaseResponse<Page<AppVO>> listGoodAppVOByPage(@RequestBody AppQueryRequest appQueryRequest) {
-        ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR);
-        // 限制每页最多 20 个
-        long pageSize = appQueryRequest.getPageSize();
-        ThrowUtils.throwIf(pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
-        long pageNum = appQueryRequest.getPageNum();
-        // 只查询精选的应用
-        appQueryRequest.setPriority(AppConstant.GOOD_APP_PRIORITY);
-        QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
-        // 分页查询
-        Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 数据封装
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+    public BaseResponse<Page<AppVO>> listGoodAppVOByPage(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
+        User viewer = userService.getLoginUserOptional(request);
+        limitBrowse(request, viewer, "search", 60);
+        return ResultUtils.success(toViews(appSearchService.search(appQueryRequest, viewer, AppSearchService.Scope.PUBLIC, true), viewer));
     }
 
     /**
@@ -295,15 +255,12 @@ public class AppController {
      */
     @PostMapping("/admin/delete")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
-    public BaseResponse<Boolean> deleteAppByAdmin(@RequestBody DeleteRequest deleteRequest) {
-        if (deleteRequest == null || deleteRequest.getId() <= 0) {
+    public BaseResponse<Boolean> deleteAppByAdmin(@RequestBody DeleteRequest deleteRequest, HttpServletRequest request) {
+        if (deleteRequest == null || deleteRequest.getId() == null || deleteRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         long id = deleteRequest.getId();
-        // 判断是否存在
-        App oldApp = appService.getById(id);
-        ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
-        boolean result = appService.removeById(id);
+        boolean result = appService.deleteApp(id, userService.getLoginUser(request));
         return ResultUtils.success(result);
     }
 
@@ -315,21 +272,11 @@ public class AppController {
      */
     @PostMapping("/admin/update")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
-    public BaseResponse<Boolean> updateAppByAdmin(@RequestBody AppAdminUpdateRequest appAdminUpdateRequest) {
-        if (appAdminUpdateRequest == null || appAdminUpdateRequest.getId() == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR);
-        }
-        long id = appAdminUpdateRequest.getId();
-        // 判断是否存在
-        App oldApp = appService.getById(id);
-        ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR);
-        App app = new App();
-        BeanUtil.copyProperties(appAdminUpdateRequest, app);
-        // 设置编辑时间
-        app.setEditTime(LocalDateTime.now());
-        boolean result = appService.updateById(app);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
-        return ResultUtils.success(true);
+    public BaseResponse<Boolean> updateAppByAdmin(@RequestBody AppAdminUpdateRequest appAdminUpdateRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(appAdminUpdateRequest == null, ErrorCode.PARAMS_ERROR);
+        AppUpdateRequest patch = new AppUpdateRequest();
+        BeanUtil.copyProperties(appAdminUpdateRequest, patch);
+        return ResultUtils.success(appMetadataService.update(patch, appAdminUpdateRequest.getPriority(), userService.getLoginUser(request), true));
     }
 
     /**
@@ -340,17 +287,9 @@ public class AppController {
      */
     @PostMapping("/admin/list/page/vo")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
-    public BaseResponse<Page<AppVO>> listAppVOByPageByAdmin(@RequestBody AppQueryRequest appQueryRequest) {
-        ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR);
-        long pageNum = appQueryRequest.getPageNum();
-        long pageSize = appQueryRequest.getPageSize();
-        QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
-        Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 数据封装
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+    public BaseResponse<Page<AppVO>> listAppVOByPageByAdmin(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
+        User viewer = userService.getLoginUser(request);
+        return ResultUtils.success(toViews(appSearchService.search(appQueryRequest, viewer, AppSearchService.Scope.ADMIN, false), viewer));
     }
 
     /**
@@ -368,5 +307,41 @@ public class AppController {
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR);
         // 获取封装类
         return ResultUtils.success(appService.getAppVO(app));
+    }
+
+    @PostMapping("/public/list/page/vo")
+    public BaseResponse<Page<AppVO>> listPublicApps(@RequestBody AppQueryRequest query, HttpServletRequest request) {
+        User viewer = userService.getLoginUserOptional(request);
+        limitBrowse(request, viewer, "search", 60);
+        return ResultUtils.success(toViews(appSearchService.search(query, viewer, AppSearchService.Scope.PUBLIC, false), viewer));
+    }
+
+    @PostMapping("/feature/apply")
+    public BaseResponse<Boolean> applyFeatured(@RequestBody AppFeatureApplyRequest body, HttpServletRequest request) {
+        ThrowUtils.throwIf(body == null, ErrorCode.PARAMS_ERROR);
+        User owner = userService.getLoginUser(request);
+        limitBrowse(request, owner, "feature-apply", 10);
+        return ResultUtils.success(appMetadataService.apply(body.getAppId(), body.getReason(), owner));
+    }
+
+    @PostMapping("/feature/review")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Boolean> reviewFeatured(@RequestBody AppFeatureReviewRequest body, HttpServletRequest request) {
+        ThrowUtils.throwIf(body == null, ErrorCode.PARAMS_ERROR);
+        return ResultUtils.success(appMetadataService.review(body.getAppId(), body.getApproved(), body.getReviewMessage(), userService.getLoginUser(request)));
+    }
+
+    private void limitBrowse(HttpServletRequest request, User viewer, String category, int limit) {
+        if (appAccessPolicy.isAdmin(viewer)) return;
+        appBrowseLimiter.check(category + "-ip", request.getRemoteAddr(), limit);
+        if (viewer != null) appBrowseLimiter.check(category + "-user", viewer.getId().toString(), limit);
+    }
+
+    private Page<AppVO> toViews(Page<App> page, User viewer) {
+        Page<AppVO> result = new Page<>(page.getPageNumber(), page.getPageSize(), page.getTotalRow());
+        List<AppVO> views = appService.getAppVOList(page.getRecords());
+        for (int i = 0; i < views.size(); i++) appAccessPolicy.redact(views.get(i), page.getRecords().get(i), viewer);
+        result.setRecords(views);
+        return result;
     }
 }

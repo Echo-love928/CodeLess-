@@ -4,6 +4,7 @@ import { CalendarOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icon
 import logoUrl from '@/assets/logo.png'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
+import { visibilityLabel } from '@/utils/appPrivacy'
 
 const props = defineProps<{
   open: boolean
@@ -49,6 +50,13 @@ const formatDateTime = (value?: string) => {
       </div>
 
       <div class="app-details__section-label">应用基础信息</div>
+      <p>
+        可见范围：<a-tag>{{ visibilityLabel(app?.visibility) }}</a-tag>
+      </p>
+      <p v-if="app?.description">{{ app.description }}</p>
+      <p v-if="app?.tags?.length">
+        <a-tag v-for="tag in app.tags" :key="tag">{{ tag }}</a-tag>
+      </p>
       <p>生成状态：<GenerationStatusTag :status="app?.generationStatus" /></p>
       <p>
         当前版本：{{ app?.version ? `V${app.version}` : '尚无版本快照'

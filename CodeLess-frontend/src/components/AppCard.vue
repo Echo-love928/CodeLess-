@@ -2,12 +2,14 @@
 import { ClockCircleOutlined, EyeOutlined, MessageOutlined } from '@ant-design/icons-vue'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
+import { visibilityLabel } from '@/utils/appPrivacy'
 
 defineProps<{ app: API.AppVO; featured?: boolean }>()
 
 const emit = defineEmits<{
   'view-conversation': [app: API.AppVO]
   'view-work': [app: API.AppVO]
+  'filter-tag': [tag: string]
 }>()
 
 const formatDate = (value?: string) =>
@@ -62,8 +64,17 @@ const formatDate = (value?: string) =>
         </div>
       </div>
       <div class="app-card__statuses">
+        <a-tag :color="app.visibility === 'public' ? 'cyan' : 'default'">{{
+          visibilityLabel(app.visibility)
+        }}</a-tag>
         <GenerationStatusTag :status="app.generationStatus" />
         <a-tag :color="isAppOnline(app) ? 'green' : 'default'">{{ getDeploymentLabel(app) }}</a-tag>
+      </div>
+      <p v-if="app.description" class="app-card__description">{{ app.description }}</p>
+      <div v-if="app.tags?.length" class="app-card__tags">
+        <button v-for="tag in app.tags" :key="tag" type="button" @click="emit('filter-tag', tag)">
+          {{ tag }}
+        </button>
       </div>
       <time class="app-card__created" :datetime="app.createTime">
         <ClockCircleOutlined /> {{ formatDate(app.createTime) }}
@@ -73,6 +84,35 @@ const formatDate = (value?: string) =>
 </template>
 
 <style scoped>
+.app-card__description {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 10px 0 0;
+  color: #68758d;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.app-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.app-card__tags button {
+  padding: 3px 8px;
+  border: 1px solid #dce8ed;
+  border-radius: 6px;
+  background: #f3faf9;
+  color: #17796f;
+  font-size: 12px;
+  cursor: pointer;
+}
+.app-card__tags button:focus-visible {
+  outline: 2px solid #2468df;
+  outline-offset: 2px;
+}
 .app-card {
   overflow: hidden;
   border: 1px solid #e5eaf2;

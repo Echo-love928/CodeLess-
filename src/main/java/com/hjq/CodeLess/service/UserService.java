@@ -57,6 +57,14 @@ public interface UserService extends IService<User> {
      */
     User getLoginUser(HttpServletRequest request);
 
+    default User getLoginUserOptional(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session == null) return null;
+        Object value = session.getAttribute(com.hjq.CodeLess.constant.UserConstant.USER_LOGIN_STATE);
+        if (!(value instanceof User user) || user.getId() == null) return null;
+        return getById(user.getId());
+    }
+
     /**
      * 获取脱敏后的用户信息
      *

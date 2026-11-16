@@ -82,7 +82,7 @@ public class AppCoverGeneratorService {
         try {
             Files.createDirectories(temporaryProfile);
             List<String> command = buildScreenshotCommand(
-                    browserPath.get(), temporaryCover, temporaryProfile, previewUrl);
+                    browserPath.get(), temporaryCover, temporaryProfile, appDir.resolve("index.html").toUri().toString());
             process = new ProcessBuilder(command)
                     .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD)

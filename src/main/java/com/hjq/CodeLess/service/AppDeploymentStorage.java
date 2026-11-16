@@ -18,6 +18,7 @@ import java.util.UUID;
 public class AppDeploymentStorage {
     private final Path outputRoot;
     private final Path deployRoot;
+    private final Path workRoot;
 
     public AppDeploymentStorage() {
         this(Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR), Path.of(AppConstant.CODE_DEPLOY_ROOT_DIR));
@@ -26,6 +27,7 @@ public class AppDeploymentStorage {
     AppDeploymentStorage(Path outputRoot, Path deployRoot) {
         this.outputRoot = outputRoot.toAbsolutePath().normalize();
         this.deployRoot = deployRoot.toAbsolutePath().normalize();
+        this.workRoot = this.deployRoot.resolveSibling(this.deployRoot.getFileName() + ".work");
     }
 
     public void publish(String codeGenType, Long appId, String deployKey) {
@@ -41,10 +43,11 @@ public class AppDeploymentStorage {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "应用代码不存在，请先完成生成");
         }
         Path target = deploymentPath(deployKey);
-        Path staging = deploymentPath("staging-" + UUID.randomUUID());
-        Path backup = deploymentPath("backup-" + UUID.randomUUID());
+        Path staging = workPath("staging-");
+        Path backup = workPath("backup-");
         try {
             Files.createDirectories(deployRoot);
+            Files.createDirectories(workRoot);
             Files.createDirectory(staging);
             FileUtil.copyContent(source.toFile(), staging.toFile(), true);
             if (Files.exists(target)) Files.move(target, backup);
@@ -71,8 +74,9 @@ public class AppDeploymentStorage {
 
     public void pause(String deployKey, Runnable persist) {
         Path target = deploymentPath(deployKey);
-        Path backup = deploymentPath("backup-" + UUID.randomUUID());
+        Path backup = workPath("backup-");
         try {
+            Files.createDirectories(workRoot);
             if (Files.exists(target)) Files.move(target, backup);
             try {
                 persist.run();
@@ -95,6 +99,12 @@ public class AppDeploymentStorage {
         }
     }
 
+    private Path workPath(String prefix) {
+        // Backups must never remain under the web server's document root, even if cleanup fails.
+        if (Files.isSymbolicLink(workRoot)) throw new IllegalArgumentException("临时部署目录无效");
+        return workRoot.resolve(prefix + UUID.randomUUID());
+    }
+
     private Path deploymentPath(String key) {
         if (key == null || !key.matches("[A-Za-z0-9_-]{1,64}")) {
             throw new IllegalArgumentException("部署标识无效");
@@ -107,6 +117,10 @@ public class AppDeploymentStorage {
     }
 
     private void deleteTree(Path path) throws IOException {
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!deployRoot.equals(normalized.getParent()) && !workRoot.equals(normalized.getParent())) {
+            throw new IOException("拒绝清理部署目录以外的路径");
+        }
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
         // walkFileTree does not follow symbolic links.
         Files.walkFileTree(path, new SimpleFileVisitor<>() {

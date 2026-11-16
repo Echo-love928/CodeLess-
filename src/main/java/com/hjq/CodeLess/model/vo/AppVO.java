@@ -18,6 +18,15 @@ public class AppVO implements Serializable {
      */
     private String appName;
 
+    private String description;
+    private java.util.List<String> tags;
+    private String visibility;
+    private String featureStatus;
+    private String featureRequestMessage;
+    private String featureReviewMessage;
+    private LocalDateTime featureRequestedTime;
+    private LocalDateTime featureReviewedTime;
+
     /**
      * 应用封面
      */

@@ -24,6 +24,10 @@ public class AppAdminUpdateRequest implements Serializable {
      */
     private String cover;
 
+    private String visibility;
+    private String description;
+    private java.util.List<String> tags;
+
     /**
      * 优先级
      */

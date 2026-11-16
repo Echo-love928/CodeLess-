@@ -39,6 +39,8 @@ public interface AppService extends IService<App> {
 
     boolean undeployApp(Long appId, User loginUser);
 
+    boolean deleteApp(Long appId, User loginUser);
+
 
     /**
      * 获取应用封装类

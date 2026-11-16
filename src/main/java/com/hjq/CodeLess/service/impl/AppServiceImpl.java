@@ -21,6 +21,8 @@ import com.hjq.CodeLess.service.AppCoverGeneratorService;
 import com.hjq.CodeLess.service.AppGenerationService;
 import com.hjq.CodeLess.service.AppDeploymentStorage;
 import com.hjq.CodeLess.service.AppVersionService;
+import com.hjq.CodeLess.service.AppDeletionService;
+import com.hjq.CodeLess.service.AppMetadataRules;
 import com.hjq.CodeLess.service.UserService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
@@ -68,6 +70,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Resource
     private AppVersionService appVersionService;
+
+    @Resource
+    private AppDeletionService appDeletionService;
+
+    @Override
+    public synchronized boolean deleteApp(Long appId, User loginUser) {
+        return appDeletionService.delete(appId, loginUser);
+    }
 
     @Value("${app.deploy.base-url}")
     private String deployBaseUrl;
@@ -169,6 +179,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         // 2. 查询应用信息
         App app = this.getById(appId);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        ThrowUtils.throwIf(!"public".equals(app.getVisibility()), ErrorCode.OPERATION_ERROR, "私有应用只能预览，请设为公开后再部署");
         // 3. 验证用户是否有权限部署该应用，仅本人可以部署
         if (!app.getUserId().equals(loginUser.getId())) {
             throw new BusinessException(ErrorCode.NO_AUTH_ERROR, "无权限部署该应用");
@@ -195,6 +206,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Override
     public synchronized boolean undeployApp(Long appId, User loginUser) {
+        getOwnedApp(appId, loginUser);
+        return appGenerationService.withIdleApp(appId, () -> undeployCurrentApp(appId, loginUser));
+    }
+
+    private boolean undeployCurrentApp(Long appId, User loginUser) {
         App app = getOwnedApp(appId, loginUser);
         App update = new App();
         update.setId(appId);
@@ -212,7 +228,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
             return null;
         }
         AppVO appVO = new AppVO();
-        BeanUtil.copyProperties(app, appVO);
+        BeanUtil.copyProperties(app, appVO, "tags");
+        appVO.setTags(AppMetadataRules.readTags(app.getTags()));
         // 关联查询用户信息
         Long userId = app.getUserId();
         if (userId != null) {
@@ -236,7 +253,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
                 .collect(Collectors.toMap(User::getId, userService::getUserVO));
         return appList.stream().map(app -> {
             AppVO appVO = new AppVO();
-            BeanUtil.copyProperties(app, appVO);
+            BeanUtil.copyProperties(app, appVO, "tags");
+            appVO.setTags(AppMetadataRules.readTags(app.getTags()));
             UserVO userVO = userVOMap.get(app.getUserId());
             appVO.setUser(userVO);
             return appVO;
@@ -259,6 +277,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         Long userId = appQueryRequest.getUserId();
         String sortField = appQueryRequest.getSortField();
         String sortOrder = appQueryRequest.getSortOrder();
+        ThrowUtils.throwIf(sortField != null && !sortField.isBlank() && !Set.of("id", "appName", "createTime", "updateTime", "priority", "version").contains(sortField), ErrorCode.PARAMS_ERROR, "不支持的排序字段");
         return QueryWrapper.create()
                 .eq("id", id)
                 .like("appName", appName)

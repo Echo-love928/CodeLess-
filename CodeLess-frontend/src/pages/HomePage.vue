@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowRightOutlined, BulbOutlined, SearchOutlined } from '@ant-design/icons-vue'
@@ -9,11 +9,13 @@ import { useLoginUserStore } from '@/stores/loginUser'
 import { getDeployUrl } from '@/config/urls'
 import { isAppOnline } from '@/utils/appStatus'
 import { useAppStatusPolling } from '@/composables/useAppStatusPolling'
+import { listPublicApps } from '@/api/appDiscoveryController'
 
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 const prompt = ref('')
 const creating = ref(false)
+const discoveryMode = ref('all')
 const activePrompt = ref('')
 const suggestions = [
   {
@@ -44,7 +46,8 @@ type AppListState = {
   loading: boolean
   pageNum: number
   pageSize: number
-  appName: string
+  searchText: string
+  tag: string
 }
 const myApps = reactive<AppListState>({
   records: [],
@@ -52,7 +55,8 @@ const myApps = reactive<AppListState>({
   loading: false,
   pageNum: 1,
   pageSize: 6,
-  appName: '',
+  searchText: '',
+  tag: '',
 })
 const goodApps = reactive<AppListState>({
   records: [],
@@ -60,7 +64,8 @@ const goodApps = reactive<AppListState>({
   loading: false,
   pageNum: 1,
   pageSize: 6,
-  appName: '',
+  searchText: '',
+  tag: '',
 })
 const isLoggedIn = computed(() => Boolean(loginUserStore.loginUser.id))
 
@@ -101,7 +106,8 @@ const loadMyApps = async () => {
     const res = await listMyAppVoByPage({
       pageNum: myApps.pageNum,
       pageSize: Math.min(myApps.pageSize, 20),
-      appName: myApps.appName || undefined,
+      searchText: myApps.searchText || undefined,
+      tag: myApps.tag || undefined,
       sortField: 'createTime',
       sortOrder: 'descend',
     })
@@ -119,19 +125,20 @@ const loadMyApps = async () => {
 const loadGoodApps = async () => {
   goodApps.loading = true
   try {
-    const res = await listGoodAppVoByPage({
+    const res = await (discoveryMode.value === 'featured' ? listGoodAppVoByPage : listPublicApps)({
       pageNum: goodApps.pageNum,
       pageSize: Math.min(goodApps.pageSize, 20),
-      appName: goodApps.appName || undefined,
-      sortField: 'priority',
+      searchText: goodApps.searchText || undefined,
+      tag: goodApps.tag || undefined,
+      sortField: discoveryMode.value === 'featured' ? 'priority' : 'createTime',
       sortOrder: 'descend',
     })
     if (res.data.code === 0 && res.data.data) {
       goodApps.records = res.data.data.records ?? []
       goodApps.total = res.data.data.totalRow ?? 0
-    } else message.error(`获取精选应用失败：${res.data.message || '未知错误'}`)
+    } else message.error(`获取公开应用失败：${res.data.message || '未知错误'}`)
   } catch {
-    message.error('获取精选应用失败')
+    message.error('获取公开应用失败')
   } finally {
     goodApps.loading = false
   }
@@ -149,6 +156,18 @@ const openDeployedApp = (app: API.AppVO) => {
   if (!deployKey || !isAppOnline(app)) return
   window.open(getDeployUrl(deployKey), '_blank', 'noopener,noreferrer')
 }
+const filterTag = (tag: string) => {
+  goodApps.tag = tag
+  searchApps(goodApps, loadGoodApps)
+  document.getElementById('good-apps-title')?.scrollIntoView({ behavior: 'smooth' })
+}
+
+const clearDiscoveryTag = () => {
+  goodApps.tag = ''
+  searchApps(goodApps, loadGoodApps)
+}
+watch(discoveryMode, () => searchApps(goodApps, loadGoodApps))
+watch(isLoggedIn, () => void loadMyApps())
 onMounted(() => void Promise.all([loadMyApps(), loadGoodApps()]))
 useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
 </script>
@@ -171,7 +190,6 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
             @press-enter.exact.prevent="createApp"
           />
           <div class="prompt-box__footer">
-            <span>Enter 发送 · 详细描述会让结果更准确</span>
             <a-button
               type="primary"
               shape="circle"
@@ -205,9 +223,10 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
         </div>
         <a-input-search
           v-if="isLoggedIn"
-          v-model:value="myApps.appName"
+          v-model:value="myApps.searchText"
           class="app-search"
-          placeholder="按名称搜索"
+          placeholder="搜索名称、描述或标签"
+          :maxlength="100"
           allow-clear
           @search="searchApps(myApps, loadMyApps)"
         />
@@ -226,6 +245,7 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
             :app="app"
             @view-conversation="openConversation"
             @view-work="openDeployedApp"
+            @filter-tag="filterTag"
           />
         </div>
         <a-empty v-else description="还没有应用，从上方输入一句话开始创建吧" />
@@ -243,17 +263,35 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
     <section class="app-section app-section--featured" aria-labelledby="good-apps-title">
       <div class="section-heading">
         <div>
-          <h2 id="good-apps-title">精选应用</h2>
-          <p>看看社区里正在发生的好创意</p>
+          <h2 id="good-apps-title">发现应用</h2>
+          <p>按名称、描述或标签寻找公开作品</p>
         </div>
         <a-input-search
-          v-model:value="goodApps.appName"
+          v-model:value="goodApps.searchText"
           class="app-search"
-          placeholder="搜索精选应用"
+          placeholder="搜索名称、描述或标签"
+          :maxlength="100"
           allow-clear
           @search="searchApps(goodApps, loadGoodApps)"
           ><template #enterButton><SearchOutlined /></template
         ></a-input-search>
+      </div>
+      <div class="discovery-filters">
+        <a-segmented
+          v-model:value="discoveryMode"
+          :options="[
+            { label: '全部公开应用', value: 'all' },
+            { label: '平台精选', value: 'featured' },
+          ]"
+        />
+        <a-input-search
+          v-model:value="goodApps.tag"
+          placeholder="按标签筛选，例如：工具"
+          allow-clear
+          style="width: 240px"
+          @search="searchApps(goodApps, loadGoodApps)"
+        />
+        <a-button v-if="goodApps.tag" type="link" @click="clearDiscoveryTag">清除标签</a-button>
       </div>
       <a-spin :spinning="goodApps.loading">
         <div v-if="goodApps.records.length" class="app-grid">
@@ -261,13 +299,15 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
             v-for="app in goodApps.records"
             :key="app.id"
             :app="app"
-            featured
+            :featured="app.priority === 99"
             @view-conversation="openConversation"
             @view-work="openDeployedApp"
+            @filter-tag="filterTag"
           />
         </div>
-        <a-empty v-else description="暂时还没有精选应用" />
+        <a-empty v-else description="没有匹配的公开应用，试试其他关键词或标签" />
       </a-spin>
+      <p class="discovery-limit">最多展示前 200 条匹配应用；可结合关键词和标签缩小范围。</p>
       <a-pagination
         v-if="goodApps.total > goodApps.pageSize"
         v-model:current="goodApps.pageNum"
@@ -281,6 +321,18 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
 </template>
 
 <style scoped>
+.discovery-filters {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 0 20px;
+}
+.discovery-limit {
+  color: #8490a1;
+  font-size: 12px;
+  margin: 18px 0 8px;
+}
 .home-page {
   --ink: #1d2b45;
   --muted: #68758d;
@@ -393,7 +445,7 @@ useAppStatusPolling(() => [...myApps.records, ...goodApps.records])
 .prompt-box__footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   color: #8190a5;
   font-size: 12px;
 }

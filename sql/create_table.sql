@@ -32,6 +32,14 @@ create table app
 (
     id           bigint auto_increment comment 'id' primary key,
     appName      varchar(256)                       null comment '应用名称',
+    `description` varchar(500) null comment '应用公开描述',
+    `tags` text null comment 'JSON 标签数组',
+    `visibility` varchar(20) not null default 'private' comment 'public/private',
+    `featureStatus` varchar(20) not null default 'none' comment 'none/pending/approved/rejected',
+    `featureRequestMessage` varchar(500) null,
+    `featureReviewMessage` varchar(500) null,
+    `featureRequestedTime` datetime null,
+    `featureReviewedTime` datetime null,
     cover        varchar(512)                       null comment '应用封面',
     initPrompt   text                               null comment '应用初始化的 prompt',
     codeGenType  varchar(64)                        null comment '代码生成类型（枚举）',
@@ -49,7 +57,8 @@ create table app
     isDelete     tinyint  default 0                 not null comment '是否删除',
     UNIQUE KEY uk_deployKey (deployKey), -- 确保部署标识唯一
     INDEX idx_appName (appName),         -- 提升基于应用名称的查询性能
-    INDEX idx_userId (userId)            -- 提升基于用户 ID 的查询性能
+    INDEX idx_userId (userId),           -- 提升基于用户 ID 的查询性能
+    INDEX idx_app_discovery (visibility,isDelete,priority,createTime)
 ) comment '应用' collate = utf8mb4_unicode_ci;
 
 create table if not exists app_version

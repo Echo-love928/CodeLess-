@@ -16,11 +16,16 @@ import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { isValidAppId, useAppId } from '@/utils/appId'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
+import { VISIBILITY_OPTIONS } from '@/utils/appPrivacy'
+import FeaturedApplicationPanel from '@/components/FeaturedApplicationPanel.vue'
 
 type EditForm = {
   appName: string
   cover: string
   priority: number
+  description: string
+  visibility: 'public' | 'private'
+  tags: string[]
 }
 
 const router = useRouter()
@@ -29,7 +34,14 @@ const loading = ref(true)
 const saving = ref(false)
 const coverPreviewFailed = ref(false)
 const app = ref<API.AppVO>()
-const form = reactive<EditForm>({ appName: '', cover: '', priority: 0 })
+const form = reactive<EditForm>({
+  appName: '',
+  cover: '',
+  priority: 0,
+  description: '',
+  visibility: 'private',
+  tags: [],
+})
 
 const appId = useAppId()
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
@@ -58,6 +70,9 @@ const resetForm = () => {
   form.appName = app.value?.appName ?? ''
   form.cover = app.value?.cover ?? ''
   form.priority = app.value?.priority ?? 0
+  form.description = app.value?.description ?? ''
+  form.visibility = app.value?.visibility ?? 'private'
+  form.tags = [...(app.value?.tags ?? [])]
   coverPreviewFailed.value = false
 }
 
@@ -98,9 +113,20 @@ const save = async () => {
   saving.value = true
   try {
     const cover = form.cover.trim()
+    const metadata = {
+      description: form.description.trim(),
+      visibility: form.visibility,
+      tags: form.tags,
+    }
     const res = isAdmin.value
-      ? await updateAppByAdmin({ id: appId.value, appName, cover, priority: form.priority })
-      : await updateApp({ id: appId.value, appName, cover })
+      ? await updateAppByAdmin({
+          id: appId.value,
+          appName,
+          cover,
+          ...metadata,
+          priority: form.visibility === 'private' ? 0 : form.priority,
+        })
+      : await updateApp({ id: appId.value, appName, cover, ...metadata })
     if (res.data.code !== 0 || !res.data.data) {
       throw new Error(res.data.message || '保存失败')
     }
@@ -128,7 +154,13 @@ onMounted(loadApp)
         </button>
         <div>
           <h1>编辑应用信息</h1>
-          <p>{{ isAdmin ? '管理员可编辑全部信息与精选优先级。' : '修改应用名称和展示封面。' }}</p>
+          <p>
+            {{
+              isAdmin
+                ? '管理员可编辑应用资料、可见范围与精选优先级。'
+                : '管理应用资料、标签和可见范围。'
+            }}
+          </p>
         </div>
       </header>
 
@@ -136,7 +168,7 @@ onMounted(loadApp)
         <div class="card-heading">
           <div>
             <h2>基本信息</h2>
-            <p>这些信息会展示在首页应用卡片上。</p>
+            <p>公开应用的资料会展示在首页；私有应用仅你和管理员可见。</p>
           </div>
           <div>
             <GenerationStatusTag :status="app?.generationStatus" /><a-tag
@@ -163,6 +195,32 @@ onMounted(loadApp)
             />
           </a-form-item>
 
+          <a-form-item label="应用描述" extra="公开展示的简介；初始生成提示词仅你和管理员可见"
+            ><a-textarea
+              v-model:value="form.description"
+              :rows="3"
+              :maxlength="500"
+              show-count
+              placeholder="介绍应用用途与亮点"
+          /></a-form-item>
+          <a-form-item
+            label="可见范围"
+            extra="私有应用仅本人和管理员可查看；公开应用改为私有会同步下线并取消精选资格"
+          >
+            <a-select v-model:value="form.visibility" :options="VISIBILITY_OPTIONS" />
+          </a-form-item>
+          <a-form-item
+            label="应用标签"
+            extra="输入后按回车添加；最多 8 个，每个 20 字符，支持按标签检索"
+          >
+            <a-select
+              v-model:value="form.tags"
+              mode="tags"
+              :max-tag-count="8"
+              :token-separators="[',', '，']"
+              placeholder="例如：工具、效率、博客"
+            />
+          </a-form-item>
           <a-form-item
             label="应用封面"
             name="cover"
@@ -227,6 +285,11 @@ onMounted(loadApp)
         </div>
       </a-form>
 
+      <FeaturedApplicationPanel
+        :app="app"
+        :owner="Boolean(loginUserStore.loginUser.id && loginUserStore.loginUser.id === app?.userId)"
+        @updated="loadApp"
+      />
       <section class="info-card">
         <div class="card-heading">
           <div>

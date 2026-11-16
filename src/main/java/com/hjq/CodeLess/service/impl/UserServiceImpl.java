@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User>  implements UserService{
 
-    private static final String USER_LOGIN_STATE = "userLoginState";
+    private static final String USER_LOGIN_STATE = com.hjq.CodeLess.constant.UserConstant.USER_LOGIN_STATE;
 
     @Override
     public long userRegister(String userAccount, String userPassword, String checkPassword) {

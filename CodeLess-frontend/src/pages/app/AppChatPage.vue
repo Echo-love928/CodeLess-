@@ -29,6 +29,7 @@ import { isValidAppId, useAppId } from '@/utils/appId'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import AppVersionsModal from '@/components/AppVersionsModal.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
+import { visibilityLabel } from '@/utils/appPrivacy'
 import 'highlight.js/styles/github.css'
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string; renderedContent?: string }
@@ -401,7 +402,7 @@ const deleteCurrentApp = () => {
   Modal.confirm({
     centered: true,
     title: '删除应用',
-    content: `确定删除“${app.value?.appName || '未命名应用'}”吗？删除后无法恢复。`,
+    content: `确定删除“${app.value?.appName || '未命名应用'}”吗？生成代码、封面、全部历史版本和部署文件将一并清除，应用会下线。此操作无法恢复。正在生成时请先停止生成。`,
     okText: '确认删除',
     okType: 'danger',
     cancelText: '取消',
@@ -471,6 +472,7 @@ onBeforeUnmount(() => {
           <span>{{ app?.appName || '未命名应用' }}</span>
         </button>
         <div class="header-actions">
+          <a-tag>{{ visibilityLabel(app?.visibility) }}</a-tag>
           <a-tag v-if="app?.version" color="blue">当前 V{{ app.version }}</a-tag>
           <span class="generation-status" role="status" aria-atomic="true"
             ><GenerationStatusTag :status="app?.generationStatus"
@@ -498,10 +500,18 @@ onBeforeUnmount(() => {
             v-if="canChat"
             type="primary"
             :loading="deploying"
-            :disabled="isGenerating || !previewReady || pausing"
+            :disabled="isGenerating || !previewReady || pausing || app?.visibility !== 'public'"
             @click="deploy"
             ><template #icon><CloudUploadOutlined /></template
-            >{{ isAppOnline(app) ? '更新部署' : app?.deployKey ? '重新上线' : '部署' }}</a-button
+            >{{
+              app?.visibility !== 'public'
+                ? '公开后可部署'
+                : isAppOnline(app)
+                  ? '更新部署'
+                  : app?.deployKey
+                    ? '重新上线'
+                    : '部署'
+            }}</a-button
           >
         </div>
       </header>

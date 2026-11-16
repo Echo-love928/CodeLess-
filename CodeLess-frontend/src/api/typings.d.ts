@@ -1,6 +1,9 @@
 declare namespace API {
   type AppAddRequest = {
     initPrompt?: string
+    description?: string
+    tags?: string[]
+    visibility?: 'public' | 'private'
   }
 
   type AppAdminUpdateRequest = {
@@ -8,6 +11,9 @@ declare namespace API {
     appName?: string
     cover?: string
     priority?: number
+    description?: string
+    tags?: string[]
+    visibility?: 'public' | 'private'
   }
 
   type AppDeployRequest = {
@@ -27,12 +33,20 @@ declare namespace API {
     deployKey?: string
     priority?: number
     userId?: string
+    searchText?: string
+    description?: string
+    tag?: string
+    visibility?: string
+    featureStatus?: string
   }
 
   type AppUpdateRequest = {
     id?: string
     appName?: string
     cover?: string
+    description?: string
+    tags?: string[]
+    visibility?: 'public' | 'private'
   }
 
   type AppVO = {
@@ -52,6 +66,14 @@ declare namespace API {
     createTime?: string
     updateTime?: string
     user?: UserVO
+    description?: string
+    tags?: string[]
+    visibility?: 'public' | 'private'
+    featureStatus?: 'none' | 'pending' | 'approved' | 'rejected'
+    featureRequestMessage?: string
+    featureReviewMessage?: string
+    featureRequestedTime?: string
+    featureReviewedTime?: string
   }
 
   type BaseResponseAppVO = {

@@ -22,6 +22,10 @@ public class AppUpdateRequest implements Serializable {
      */
     private String cover;
 
+    private String visibility;
+    private String description;
+    private java.util.List<String> tags;
+
     private static final long serialVersionUID = 1L;
 }
 
