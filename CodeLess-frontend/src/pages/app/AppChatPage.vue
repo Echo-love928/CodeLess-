@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   ArrowUpOutlined,
@@ -30,14 +30,23 @@ import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import AppVersionsModal from '@/components/AppVersionsModal.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { visibilityLabel } from '@/utils/appPrivacy'
+import { listAppChatHistory } from '@/api/chatHistoryController'
+import { useChatHistory } from '@/composables/useChatHistory'
 import 'highlight.js/styles/github.css'
 
-type ChatMessage = { role: 'user' | 'assistant'; content: string; renderedContent?: string }
-const route = useRoute()
+type ChatMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  renderedContent?: string
+}
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 const app = ref<API.AppVO>()
-const chatMessages = ref<ChatMessage[]>([])
+const liveMessages = ref<ChatMessage[]>([])
+let nextMessageId = 0
+const initializing = ref(true)
+const historyError = ref('')
 const inputMessage = ref('')
 const loading = ref(true)
 const generating = ref(false)
@@ -69,13 +78,43 @@ let statusTimer: number | undefined
 let statusRequestPending = false
 let disposed = false
 
-const appId = useAppId()
+// 页面按应用路由重新挂载；异步请求和卸载停止请求始终使用当前实例的 ID。
+const appId = ref(useAppId().value)
+const {
+  records: historyRecords,
+  loading: historyLoading,
+  loaded: historyLoaded,
+  hasMore: hasMoreHistory,
+  load: fetchHistory,
+} = useChatHistory(async (cursor) => {
+  const res = await listAppChatHistory({
+    appId: appId.value,
+    pageSize: 10,
+    lastCreateTime: cursor,
+  })
+  if (res.data.code !== 0 || !res.data.data) {
+    throw new Error(res.data.message || '获取对话历史失败')
+  }
+  return res.data.data
+})
+const historyMessages = computed<ChatMessage[]>(() =>
+  historyRecords.value.map((record, index) => ({
+    id: `history:${record.id ?? `${record.createTime}:${index}`}`,
+    role: record.messageType === 'ai' ? 'assistant' : 'user',
+    content: record.message ?? '',
+    renderedContent: record.messageType === 'ai' ? renderMarkdown(record.message ?? '') : undefined,
+  })),
+)
+const chatMessages = computed(() => [...historyMessages.value, ...liveMessages.value])
 const isAdmin = computed(() => loginUserStore.loginUser.userRole === 'admin')
-const canEdit = computed(() => isAdmin.value || loginUserStore.loginUser.id === app.value?.userId)
+const canEdit = computed(
+  () =>
+    Boolean(loginUserStore.loginUser.id) &&
+    (isAdmin.value || loginUserStore.loginUser.id === app.value?.userId),
+)
 const canChat = computed(
   () => Boolean(loginUserStore.loginUser.id) && loginUserStore.loginUser.id === app.value?.userId,
 )
-const isViewMode = computed(() => route.query.view === '1')
 const isGenerating = computed(
   () => generating.value || app.value?.generationStatus === 'generating',
 )
@@ -251,15 +290,15 @@ const sendMessage = async (preset?: string) => {
     return
   }
   const content = (preset ?? inputMessage.value).trim()
-  if (!content || isGenerating.value) return
+  if (!content || isGenerating.value || !historyLoaded.value || disposed) return
   const hasExistingWebsite = previewReady.value
   const requestContent =
-    hasExistingWebsite && app.value?.initPrompt
+    chatMessages.value.length > 0 && hasExistingWebsite && app.value?.initPrompt
       ? `原始建站需求：${app.value.initPrompt}\n\n本次修改需求：${content}\n\n请保留未要求修改的功能，并输出修改后的完整网站代码。`
       : content
-  chatMessages.value.push(
-    { role: 'user', content },
-    { role: 'assistant', content: '', renderedContent: '' },
+  liveMessages.value.push(
+    { id: `local:${nextMessageId++}`, role: 'user', content },
+    { id: `local:${nextMessageId++}`, role: 'assistant', content: '', renderedContent: '' },
   )
   inputMessage.value = ''
   generating.value = true
@@ -428,21 +467,48 @@ const deleteCurrentApp = () => {
   })
 }
 
-onMounted(async () => {
-  await loadApp()
-  await checkPreview()
-  if (
-    !isViewMode.value &&
-    route.query.auto === '1' &&
-    app.value?.initPrompt &&
-    !isGenerating.value
-  ) {
-    const key = `codeless:auto-generated:${appId.value}`
-    if (!sessionStorage.getItem(key)) {
-      sessionStorage.setItem(key, '1')
-      await sendMessage(app.value.initPrompt)
+const loadHistory = async () => {
+  if (historyLoading.value || disposed) return
+  const initial = !historyLoaded.value
+  const list = messageListRef.value
+  const scrollHeight = list?.scrollHeight ?? 0
+  const scrollTop = list?.scrollTop ?? 0
+  historyError.value = ''
+  try {
+    await fetchHistory()
+    if (disposed) return
+    await nextTick()
+    if (initial) {
+      await scrollToBottom(true)
+      if (
+        canChat.value &&
+        !chatMessages.value.length &&
+        app.value?.initPrompt &&
+        !isGenerating.value
+      ) {
+        void sendMessage(app.value.initPrompt)
+      }
+    } else if (list) {
+      // 向顶部插入更早消息后，保持用户正在阅读的消息位置。
+      list.scrollTop = scrollTop + list.scrollHeight - scrollHeight
+      updateScrollPosition()
     }
-    await router.replace({ path: route.path })
+  } catch (error) {
+    if (!disposed) {
+      historyError.value = error instanceof Error ? error.message : '获取对话历史失败，请重试'
+    }
+  }
+}
+
+onMounted(async () => {
+  try {
+    await loadApp()
+    if (!app.value || disposed) return
+    // 访客无权读取历史，仍可查看已有网站；所有者和管理员先读取最近 10 条。
+    await checkPreview()
+    if (canEdit.value && !disposed) await loadHistory()
+  } finally {
+    initializing.value = false
   }
 })
 onBeforeUnmount(() => {
@@ -464,7 +530,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <a-spin :spinning="loading" tip="正在加载应用…">
+  <a-spin :spinning="loading || initializing" tip="正在加载应用…">
     <main class="chat-page">
       <header class="chat-page__header">
         <button class="app-name" type="button" @click="router.push('/')">
@@ -519,7 +585,24 @@ onBeforeUnmount(() => {
       <div class="workspace">
         <section class="conversation" aria-label="AI 对话">
           <div ref="messageListRef" class="message-list" @scroll.passive="updateScrollPosition">
-            <div v-if="!chatMessages.length" class="conversation-empty">
+            <div v-if="canEdit" class="history-controls" :aria-busy="historyLoading">
+              <template v-if="historyError">
+                <span role="alert">{{ historyError }}</span>
+                <a-button type="link" :loading="historyLoading" @click="loadHistory">重试</a-button>
+              </template>
+              <a-button
+                v-else-if="hasMoreHistory || !historyLoaded"
+                type="link"
+                :loading="historyLoading"
+                @click="loadHistory"
+                >{{ historyLoaded ? '加载更多' : '加载对话历史' }}</a-button
+              >
+              <span v-else-if="historyRecords.length">已加载全部历史消息</span>
+            </div>
+            <div
+              v-if="!chatMessages.length && !historyLoading && !historyError"
+              class="conversation-empty"
+            >
               <img class="conversation-empty__logo" :src="logoUrl" alt="" />
               <h2>{{ canChat ? '继续完善你的应用' : '正在查看这个应用' }}</h2>
               <p>
@@ -531,8 +614,8 @@ onBeforeUnmount(() => {
               </p>
             </div>
             <div
-              v-for="(item, index) in chatMessages"
-              :key="index"
+              v-for="item in chatMessages"
+              :key="item.id"
               :class="['message-row', `message-row--${item.role}`]"
             >
               <img
@@ -548,14 +631,19 @@ onBeforeUnmount(() => {
                   v-html="item.renderedContent"
                 />
                 <span v-else-if="item.content">{{ item.content }}</span>
-                <span v-else class="typing"><i /><i /><i /></span>
+                <span
+                  v-else-if="isGenerating && item === liveMessages[liveMessages.length - 1]"
+                  class="typing"
+                  ><i /><i /><i
+                /></span>
+                <span v-else>（空消息）</span>
               </div>
               <a-avatar
                 v-if="item.role === 'user'"
                 class="message-avatar message-avatar--user"
-                :src="loginUserStore.loginUser.userAvatar"
+                :src="app?.user?.userAvatar"
               >
-                {{ loginUserStore.loginUser.userName?.slice(0, 1) || '用' }}
+                {{ app?.user?.userName?.slice(0, 1) || '用' }}
               </a-avatar>
             </div>
           </div>
@@ -573,7 +661,7 @@ onBeforeUnmount(() => {
                 v-model:value="inputMessage"
                 :auto-size="{ minRows: 3, maxRows: 7 }"
                 :maxlength="2000"
-                :disabled="!canChat"
+                :disabled="!canChat || !historyLoaded"
                 :placeholder="
                   canChat ? '请描述你想生成的网站，越详细效果越好哦' : '仅作品所有者可以继续对话'
                 "
@@ -598,7 +686,7 @@ onBeforeUnmount(() => {
                   v-else
                   type="primary"
                   shape="circle"
-                  :disabled="!canChat || !inputMessage.trim()"
+                  :disabled="!canChat || !historyLoaded || !inputMessage.trim()"
                   aria-label="发送消息"
                   @click="sendMessage()"
                   ><template #icon><ArrowUpOutlined /></template
@@ -722,10 +810,25 @@ onBeforeUnmount(() => {
   scrollbar-color: #bdcbe0 transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
+  overflow-anchor: none;
   flex: 1;
 }
 .message-list::-webkit-scrollbar {
   width: 7px;
+}
+.history-controls {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #768398;
+  font-size: 12px;
+  overflow-anchor: none;
+}
+.history-controls .ant-btn {
+  min-height: 44px;
 }
 .message-list::-webkit-scrollbar-thumb {
   border-radius: 999px;

@@ -1,4 +1,49 @@
 declare namespace API {
+  type ChatHistory = {
+    id?: string
+    message?: string
+    messageType?: string
+    appId?: string
+    userId?: string
+    createTime?: string
+    updateTime?: string
+    isDelete?: number
+  }
+
+  type ChatHistoryQueryRequest = {
+    pageNum?: number
+    pageSize?: number
+    sortField?: string
+    sortOrder?: string
+    id?: string
+    message?: string
+    messageType?: string
+    appId?: string
+    userId?: string
+    lastCreateTime?: string
+  }
+
+  type listAppChatHistoryParams = {
+    appId: string
+    pageSize?: number
+    lastCreateTime?: string
+  }
+
+  type PageChatHistory = {
+    records?: ChatHistory[]
+    pageNumber?: number
+    pageSize?: number
+    totalPage?: number
+    totalRow?: number
+    optimizeCountQuery?: boolean
+  }
+
+  type BaseResponsePageChatHistory = {
+    code?: number
+    data?: PageChatHistory
+    message?: string
+  }
+
   type AppAddRequest = {
     initPrompt?: string
     description?: string

@@ -25,7 +25,7 @@ class VersionedGenerationCancellationTest {
         var partial = new AtomicReference<BiConsumer<PartialResponse, PartialResponseContext>>();
         var completed = new AtomicReference<Consumer<ChatResponse>>();
         when(versions.generationPrompt(1L, "request")).thenReturn("context");
-        when(ai.generateHtmlCodeTokenStream("context")).thenReturn(tokens);
+        when(ai.generateHtmlCodeTokenStream(1L, "context")).thenReturn(tokens);
         doAnswer(call -> { partial.set(call.getArgument(0)); return tokens; }).when(tokens).onPartialResponseWithContext(any());
         doAnswer(call -> { completed.set(call.getArgument(0)); return tokens; }).when(tokens).onCompleteResponse(any());
         var facade = new AiCodeGeneratorFacade();

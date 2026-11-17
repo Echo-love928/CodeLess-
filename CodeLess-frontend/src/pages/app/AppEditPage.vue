@@ -139,8 +139,7 @@ const save = async () => {
   }
 }
 
-const enterConversation = () =>
-  router.push({ path: `/app/chat/${appId.value}`, query: { view: '1' } })
+const enterConversation = () => router.push(`/app/chat/${appId.value}`)
 
 onMounted(loadApp)
 </script>

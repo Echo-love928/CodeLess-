@@ -42,11 +42,11 @@ public class AiCodeGeneratorFacade {
         String generationPrompt = appVersionService.generationPrompt(appId, userMessage);
         return switch (codeGenTypeEnum) {
             case HTML -> {
-                HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(generationPrompt);
+                HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(appId, generationPrompt);
                 yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
-                MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(generationPrompt);
+                MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(appId, generationPrompt);
                 yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
             default -> {
@@ -71,12 +71,12 @@ public class AiCodeGeneratorFacade {
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateHtmlCodeTokenStream(appVersionService.generationPrompt(appId, userMessage))));
+                        aiCodeGeneratorService.generateHtmlCodeTokenStream(appId, appVersionService.generationPrompt(appId, userMessage))));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(appVersionService.generationPrompt(appId, userMessage))));
+                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(appId, appVersionService.generationPrompt(appId, userMessage))));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
             default -> {

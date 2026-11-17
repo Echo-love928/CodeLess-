@@ -1,6 +1,6 @@
 package com.hjq.CodeLess.service;
 
-import com.hjq.CodeLess.ai.AiCodeGeneratorService;
+import com.hjq.CodeLess.ai.AiAppNameGeneratorService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,11 +13,11 @@ import java.time.Duration;
 @Slf4j
 public class AppNameGeneratorService {
     @Resource
-    private AiCodeGeneratorService aiCodeGeneratorService;
+    private AiAppNameGeneratorService aiAppNameGeneratorService;
 
     public String generateName(String initPrompt) {
         String fallback = abbreviate(initPrompt.strip().replaceAll("\\s+", " "), 20);
-        return Mono.fromCallable(() -> normalize(aiCodeGeneratorService.generateAppName(initPrompt), fallback))
+        return Mono.fromCallable(() -> normalize(aiAppNameGeneratorService.generateAppName(initPrompt), fallback))
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(Duration.ofSeconds(8))
                 .onErrorResume(error -> {

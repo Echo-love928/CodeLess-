@@ -1,9 +1,11 @@
 package com.hjq.CodeLess.service.impl;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.mybatisflex.core.paginate.Page;
 import com.hjq.CodeLess.constant.UserConstant;
 import com.hjq.CodeLess.exception.ErrorCode;
+import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ThrowUtils;
 import com.hjq.CodeLess.model.dto.chathistory.ChatHistoryQueryRequest;
 import com.hjq.CodeLess.model.entity.App;
@@ -15,10 +17,18 @@ import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.hjq.CodeLess.model.entity.ChatHistory;
 import com.hjq.CodeLess.mapper.ChatHistoryMapper;
 import com.hjq.CodeLess.service.ChatHistoryService;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 对话历史 服务层实现。
@@ -26,9 +36,11 @@ import java.time.LocalDateTime;
  * @author <a href="https://github.com/Echo-love928?tab=repositories">CodeLess</a>
  */
 @Service
+@Slf4j
 public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatHistory>  implements ChatHistoryService{
 
     @Resource
+    @Lazy
     private AppService appService;
 
     @Override
@@ -78,6 +90,52 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         // 查询数据
         return this.page(Page.of(1, pageSize), queryWrapper);
     }
+
+    @Override
+    public int loadChatHistoryToMemory(Long appId, MessageWindowChatMemory chatMemory, int maxCount) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
+        ThrowUtils.throwIf(chatMemory == null || maxCount <= 0 || maxCount > 50,
+                ErrorCode.PARAMS_ERROR, "对话记忆和加载条数无效");
+        try {
+            // 业务层已先保存本轮用户消息；读取后按类型排除，避免跳过历史应用最后的 AI 回复。
+            QueryWrapper queryWrapper = QueryWrapper.create()
+                    .eq("appId", appId)
+                    .orderBy("createTime", false)
+                    .orderBy("id", false)
+                    .limit(maxCount + 1);
+            List<ChatHistory> historyList = this.list(queryWrapper);
+            if (CollUtil.isEmpty(historyList)) {
+                return 0;
+            }
+            historyList = new ArrayList<>(historyList);
+            if (ChatHistoryMessageTypeEnum.USER.getValue().equals(historyList.get(0).getMessageType())) {
+                historyList.remove(0);
+            }
+            if (historyList.isEmpty()) return 0;
+            if (historyList.size() > maxCount) historyList = new ArrayList<>(historyList.subList(0, maxCount));
+            // 时间相同的记录按 ID 排序，恢复后按从旧到新的顺序加入记忆。
+            Collections.reverse(historyList);
+            // 按时间顺序添加到记忆中
+            int loadedCount = 0;
+            // 先清理历史缓存，防止重复加载
+            chatMemory.clear();
+            for (ChatHistory history : historyList) {
+                if (ChatHistoryMessageTypeEnum.USER.getValue().equals(history.getMessageType())) {
+                    chatMemory.add(UserMessage.from(history.getMessage()));
+                    loadedCount++;
+                } else if (ChatHistoryMessageTypeEnum.AI.getValue().equals(history.getMessageType())) {
+                    chatMemory.add(AiMessage.from(history.getMessage()));
+                    loadedCount++;
+                }
+            }
+            log.info("成功为 appId: {} 加载了 {} 条历史对话", appId, loadedCount);
+            return loadedCount;
+        } catch (Exception e) {
+            log.error("加载历史对话失败，appId: {}, error: {}", appId, e.getMessage(), e);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "加载历史对话失败，请稍后重试");
+        }
+    }
+
 
 
     /**

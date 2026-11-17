@@ -12,7 +12,7 @@ const route = useRoute()
     <GlobalHeader />
 
     <a-layout-content class="basic-layout__content">
-      <RouterView />
+      <RouterView :key="route.path.startsWith('/app/chat/') ? route.path : undefined" />
     </a-layout-content>
 
     <GlobalFooter />

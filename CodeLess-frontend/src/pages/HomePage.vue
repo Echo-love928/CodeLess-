@@ -81,7 +81,7 @@ const createApp = async () => {
   try {
     const res = await addApp({ initPrompt })
     if (res.data.code === 0 && res.data.data) {
-      await router.push({ path: `/app/chat/${res.data.data}`, query: { auto: '1' } })
+      await router.push(`/app/chat/${res.data.data}`)
     } else message.error(`创建失败：${res.data.message || '请稍后重试'}`)
   } catch {
     message.error('创建失败，请检查后端服务是否正常')
@@ -149,7 +149,7 @@ const searchApps = (target: AppListState, loader: () => Promise<void>) => {
   void loader()
 }
 const openConversation = (app: API.AppVO) => {
-  if (app.id) void router.push({ path: `/app/chat/${app.id}`, query: { view: '1' } })
+  if (app.id) void router.push(`/app/chat/${app.id}`)
 }
 const openDeployedApp = (app: API.AppVO) => {
   const deployKey = app.deployKey?.trim()

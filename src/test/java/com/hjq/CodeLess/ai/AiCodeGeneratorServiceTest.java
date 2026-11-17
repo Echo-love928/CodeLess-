@@ -17,13 +17,13 @@ class AiCodeGeneratorServiceTest {
 
     @Test
     void generateHtmlCode() {
-        HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode("做个hjq的工作记录小工具");
+        HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(1L, "做个hjq的工作记录小工具");
         Assertions.assertNotNull(result);
     }
 
     @Test
     void generateMultiFileCode() {
-        MultiFileCodeResult multiFileCode = aiCodeGeneratorService.generateMultiFileCode("做个hjq的留言板");
+        MultiFileCodeResult multiFileCode = aiCodeGeneratorService.generateMultiFileCode(2L, "做个hjq的留言板");
         Assertions.assertNotNull(multiFileCode);
     }
 
