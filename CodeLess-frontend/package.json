@@ -8,7 +8,7 @@
     "build": "run-p type-check \"build-only {@}\" --",
     "check:id-precision": "node scripts/check-id-precision.mjs",
     "test:diff": "node --test scripts/test-line-diff.mjs",
-    "test:chat-history": "node --test scripts/test-chat-history.mjs scripts/test-app-chat.mjs",
+    "test:chat-history": "node --test scripts/test-chat-history.mjs scripts/test-app-chat.mjs scripts/test-chat-history-export.mjs",
     "openapi2ts": "openapi2ts",
     "preview": "vite preview",
     "build-only": "vite build",

@@ -1,5 +1,13 @@
 import request from '@/request'
 
+/** 下载当前应用完整的 Markdown 对话历史。 */
+export async function exportAppChatHistory(params: { appId: string }) {
+  return request<Blob>(`/chatHistory/app/${params.appId}/export`, {
+    method: 'GET',
+    responseType: 'blob',
+  })
+}
+
 /** 分页查询应用对话历史（创建时间游标）。 */
 export async function listAppChatHistory(params: API.listAppChatHistoryParams) {
   const { appId, ...query } = params

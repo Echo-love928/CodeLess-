@@ -9,6 +9,7 @@ import {
   PauseOutlined,
   StopOutlined,
   HistoryOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons-vue'
 import {
   deleteApp,
@@ -30,8 +31,13 @@ import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
 import AppVersionsModal from '@/components/AppVersionsModal.vue'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { visibilityLabel } from '@/utils/appPrivacy'
-import { listAppChatHistory } from '@/api/chatHistoryController'
+import { exportAppChatHistory, listAppChatHistory } from '@/api/chatHistoryController'
 import { useChatHistory } from '@/composables/useChatHistory'
+import {
+  assertMarkdownExport,
+  chatHistoryExportFileName,
+  downloadMarkdown,
+} from '@/utils/chatHistoryExport'
 import 'highlight.js/styles/github.css'
 
 type ChatMessage = {
@@ -47,6 +53,7 @@ const liveMessages = ref<ChatMessage[]>([])
 let nextMessageId = 0
 const initializing = ref(true)
 const historyError = ref('')
+const exporting = ref(false)
 const inputMessage = ref('')
 const loading = ref(true)
 const generating = ref(false)
@@ -467,6 +474,22 @@ const deleteCurrentApp = () => {
   })
 }
 
+const exportHistory = async () => {
+  if (!canEdit.value || exporting.value || isGenerating.value || !chatMessages.value.length) return
+  exporting.value = true
+  try {
+    const response = await exportAppChatHistory({ appId: appId.value })
+    await assertMarkdownExport(response.data)
+    if (disposed) return
+    downloadMarkdown(response.data, chatHistoryExportFileName(app.value?.appName, appId.value))
+    message.success('对话历史已导出')
+  } catch (error) {
+    if (!disposed) message.error(error instanceof Error ? error.message : '导出失败，请稍后重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
 const loadHistory = async () => {
   if (historyLoading.value || disposed) return
   const initial = !historyLoaded.value
@@ -551,6 +574,15 @@ onBeforeUnmount(() => {
           >
           <a-button v-if="canEdit" @click="versionsOpen = true"
             ><template #icon><HistoryOutlined /></template>版本历史</a-button
+          >
+          <a-button
+            v-if="canEdit"
+            :loading="exporting"
+            :disabled="initializing || isGenerating || !chatMessages.length"
+            :aria-busy="exporting"
+            title="导出此应用的全部对话历史为 Markdown"
+            @click="exportHistory"
+            ><template #icon><DownloadOutlined /></template>导出对话</a-button
           >
           <a-button @click="detailsOpen = true"
             ><template #icon><InfoCircleOutlined /></template>应用详情</a-button

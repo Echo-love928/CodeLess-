@@ -9,17 +9,22 @@ import com.hjq.CodeLess.exception.ThrowUtils;
 import com.hjq.CodeLess.model.dto.chathistory.ChatHistoryQueryRequest;
 import com.hjq.CodeLess.model.entity.User;
 import com.hjq.CodeLess.service.UserService;
+import com.hjq.CodeLess.service.ChatHistoryExportService;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import com.hjq.CodeLess.model.entity.ChatHistory;
 import com.hjq.CodeLess.service.ChatHistoryService;
 
 import java.time.LocalDateTime;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 对话历史 控制层。
@@ -35,6 +40,23 @@ public class ChatHistoryController {
 
     @Resource
     private ChatHistoryService chatHistoryService;
+
+    @Resource
+    private ChatHistoryExportService chatHistoryExportService;
+
+    /** 导出应用的完整对话历史为 UTF-8 Markdown 文件。 */
+    @GetMapping("/app/{appId}/export")
+    public ResponseEntity<byte[]> exportAppChatHistory(@PathVariable Long appId, HttpServletRequest request) {
+        var export = chatHistoryExportService.export(appId, userService.getLoginUser(request));
+        byte[] content = export.content().getBytes(StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .contentType(new MediaType("text", "markdown", StandardCharsets.UTF_8))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(export.fileName(), StandardCharsets.UTF_8).build().toString())
+                .cacheControl(CacheControl.noStore())
+                .contentLength(content.length)
+                .body(content);
+    }
 
     /**
      * 分页查询某个应用的对话历史（游标查询）

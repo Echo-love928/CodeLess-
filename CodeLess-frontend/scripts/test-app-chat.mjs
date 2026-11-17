@@ -7,6 +7,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 import { useChatHistory } from '../src/composables/useChatHistory.ts'
+import { assertMarkdownExport, chatHistoryExportFileName } from '../src/utils/chatHistoryExport.ts'
 
 // 执行真实页面的 setup 和挂载钩子，用可控 API 与 SSE 验证初始化流程。
 const require = createRequire(import.meta.url)
@@ -38,11 +39,30 @@ const mountPage = (options = {}) => {
   const appId = '1990000000000000001'
   const userId = '1990000000000000002'
   const ownerId = options.otherOwner ? '1990000000000000003' : userId
-  const app = { id: appId, userId: ownerId, initPrompt: '创建一个咖啡馆网站', codeGenType: 'html' }
+  const app = {
+    id: appId,
+    userId: ownerId,
+    appName: '测试应用',
+    initPrompt: options.initPrompt ?? '创建一个咖啡馆网站',
+    codeGenType: 'html',
+  }
   const historyCalls = []
   const generationCalls = []
   const errors = []
+  const exportCalls = []
+  const downloads = []
   const api = {
+    exportAppChatHistory: async (params) => {
+      exportCalls.push({ ...params })
+      if (options.exportFailure) throw new Error('网络连接失败')
+      return {
+        data:
+          typeof options.exportBlob === 'function'
+            ? await options.exportBlob()
+            : (options.exportBlob ??
+              new Blob(['# 完整历史'], { type: 'text/markdown;charset=utf-8' })),
+      }
+    },
     getAppVoById: async () => ({ data: { code: 0, data: { ...app } } }),
     listAppChatHistory: async (params) => {
       historyCalls.push({ ...params })
@@ -77,6 +97,11 @@ const mountPage = (options = {}) => {
     '@/utils/appId': { useAppId: () => vue.ref(appId), isValidAppId: () => true },
     '@/utils/appStatus': { isAppOnline: () => false },
     '@/composables/useChatHistory': { useChatHistory },
+    '@/utils/chatHistoryExport': {
+      assertMarkdownExport,
+      chatHistoryExportFileName,
+      downloadMarkdown: (blob, fileName) => downloads.push({ blob, fileName }),
+    },
   }
   const mockRequire = (name) => {
     if (name in modules) return modules[name]
@@ -118,7 +143,16 @@ const mountPage = (options = {}) => {
   component.render = () => null
   const mounted = renderer.createApp(component)
   const vm = mounted.mount({})
-  return { mounted, state: vm.$.setupState, historyCalls, generationCalls, errors, appId }
+  return {
+    mounted,
+    state: vm.$.setupState,
+    historyCalls,
+    generationCalls,
+    errors,
+    appId,
+    exportCalls,
+    downloads,
+  }
 }
 
 test('an owned app with empty history automatically sends initPrompt without URL flags', async () => {
@@ -131,6 +165,120 @@ test('an owned app with empty history automatically sends initPrompt without URL
     assert.equal(page.generationCalls[0].searchParams.get('message'), '创建一个咖啡馆网站')
     assert.equal(page.state.chatMessages.length, 2)
     assert.equal(page.state.previewReady, true)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+const exportHistory = {
+  records: [
+    { id: '1', messageType: 'user', message: '已有需求', createTime: '2026-11-17T10:00:01' },
+  ],
+  totalRow: 25,
+}
+
+test('exports full server history even when only the first page has been loaded', async () => {
+  const blob = new Blob(['# 全部 25 条历史\n\n```html\n<h1>你好</h1>\n```'], {
+    type: 'text/markdown;charset=utf-8',
+  })
+  const page = mountPage({ history: exportHistory, exportBlob: blob })
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.exportHistory()
+    assert.deepEqual(page.exportCalls, [{ appId: page.appId }])
+    assert.equal(page.historyCalls.length, 1)
+    assert.equal(page.downloads.length, 1)
+    assert.equal(page.downloads[0].blob, blob)
+    assert.equal(page.downloads[0].fileName, `测试应用-对话记录-${page.appId}.md`)
+    assert.equal(page.state.exporting, false)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('prevents duplicate exports while a download request is pending', async () => {
+  let resolveExport
+  const page = mountPage({
+    history: exportHistory,
+    exportBlob: () =>
+      new Promise((resolve) => {
+        resolveExport = resolve
+      }),
+  })
+  try {
+    await settle(() => !page.state.initializing)
+    const pending = page.state.exportHistory()
+    assert.equal(page.state.exporting, true)
+    await page.state.exportHistory()
+    assert.equal(page.exportCalls.length, 1)
+    resolveExport(new Blob(['# history'], { type: 'text/markdown' }))
+    await pending
+    assert.equal(page.downloads.length, 1)
+    assert.equal(page.state.exporting, false)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('a JSON permission error is shown instead of being downloaded as Markdown', async () => {
+  const page = mountPage({
+    history: exportHistory,
+    exportBlob: new Blob([JSON.stringify({ code: 40300, message: '无权导出' })], {
+      type: 'application/json',
+    }),
+  })
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.exportHistory()
+    assert.deepEqual(page.errors, ['无权导出'])
+    assert.equal(page.downloads.length, 0)
+    assert.equal(page.state.exporting, false)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('a failed export can be retried and never leaves the button loading', async () => {
+  const options = { history: exportHistory, exportFailure: true }
+  const page = mountPage(options)
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.exportHistory()
+    assert.equal(page.state.exporting, false)
+    assert.equal(page.downloads.length, 0)
+    options.exportFailure = false
+    await page.state.exportHistory()
+    assert.equal(page.exportCalls.length, 2)
+    assert.equal(page.downloads.length, 1)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('visitors cannot export, while administrators can export another app history', async () => {
+  for (const admin of [false, true]) {
+    const page = mountPage({ history: exportHistory, otherOwner: true, admin })
+    try {
+      await settle(() => !page.state.initializing)
+      await page.state.exportHistory()
+      assert.equal(page.exportCalls.length, admin ? 1 : 0)
+      assert.equal(page.downloads.length, admin ? 1 : 0)
+    } finally {
+      page.mounted.unmount()
+    }
+  }
+})
+
+test('does not export during generation or when the app has no messages', async () => {
+  const page = mountPage({ initPrompt: '' })
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.exportHistory()
+    assert.equal(page.exportCalls.length, 0)
+    page.state.liveMessages = [{ id: 'local:1', role: 'user', content: '生成中' }]
+    page.state.generating = true
+    await page.state.exportHistory()
+    assert.equal(page.exportCalls.length, 0)
   } finally {
     page.mounted.unmount()
   }
