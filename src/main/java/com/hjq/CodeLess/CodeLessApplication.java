@@ -7,7 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-@MapperScan("com.hjq.CodeLess.mapper")
+@MapperScan({"com.hjq.CodeLess.mapper", "com.hjq.CodeLess.genresult.mapper"})
 public class CodeLessApplication {
 
     public static void main(String[] args) {
