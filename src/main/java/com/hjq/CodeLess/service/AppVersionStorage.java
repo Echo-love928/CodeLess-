@@ -8,11 +8,13 @@ import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -33,8 +35,24 @@ public class AppVersionStorage {
     }
 
     public Path saveGenerated(Long appId, CodeGenTypeEnum type, int version, Object result) {
+        if (type == CodeGenTypeEnum.VUE_PROJECT) {
+            Path source = (Path) result;
+            if (!Files.isRegularFile(source.resolve("package.json"))) throw error("Vue 工程缺少 package.json");
+            return snapshot(appId, type.getValue(), version, stage -> copy(source, stage));
+        }
         return snapshot(appId, type.getValue(), version,
                 stage -> CodeFileSaverExecutor.saveToDirectory(result, type, stage.toFile()));
+    }
+
+    public Path createVueProjectWorkspace() {
+        rejectSymlinks(versionsRoot);
+        try {
+            Files.createDirectories(versionsRoot);
+            return Files.createTempDirectory(versionsRoot, ".vue-generation-");
+        } catch (IOException exception) {
+            log.error("创建 Vue 工程临时目录失败", exception);
+            throw error("创建 Vue 工程临时目录失败");
+        }
     }
 
     public boolean hasPreview(Long appId, String type) {
@@ -75,16 +93,25 @@ public class AppVersionStorage {
         if (!Files.isRegularFile(directory.resolve("index.html"))) throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "版本代码不存在");
         Map<String, String> result = new LinkedHashMap<>();
         try {
-            for (String name : new String[]{"index.html", "style.css", "script.js"}) {
-                Path file = directory.resolve(name);
+            var files = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(type)
+                    ? listProjectFiles(directory)
+                    : List.of(directory.resolve("index.html"), directory.resolve("style.css"), directory.resolve("script.js"));
+            for (Path file : files) {
                 rejectSymlinks(file);
                 if (!Files.exists(file)) continue;
                 if (Files.size(file) > 2 * 1024 * 1024) throw error("文件超过 2 MB，无法在线对比");
+                String name = directory.relativize(file).toString().replace(File.separatorChar, '/');
                 result.put(name, Files.readString(file, StandardCharsets.UTF_8));
             }
             return result;
         } catch (IOException exception) {
             throw error("读取版本代码失败");
+        }
+    }
+
+    private List<Path> listProjectFiles(Path directory) throws IOException {
+        try (var files = Files.walk(directory)) {
+            return files.filter(path -> !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).sorted().toList();
         }
     }
 

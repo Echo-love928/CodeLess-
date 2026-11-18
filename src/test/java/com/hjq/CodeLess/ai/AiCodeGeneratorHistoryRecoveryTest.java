@@ -53,7 +53,8 @@ class AiCodeGeneratorHistoryRecoveryTest {
                 return ChatResponse.builder().aiMessage(AiMessage.from("{\"htmlCode\":\"ok\",\"description\":\"ok\"}")).build();
             }
         });
-        context.registerBean("streamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
+        context.registerBean("openAiStreamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
+        context.registerBean("reasoningStreamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
         context.registerBean("redisChatMemoryStore", RedisChatMemoryStore.class, () -> store);
         context.getBeanFactory().registerSingleton("chatHistoryService", history);
         context.register(AiCodeGeneratorServiceFactory.class);

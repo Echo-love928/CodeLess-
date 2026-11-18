@@ -1,10 +1,14 @@
 package com.hjq.CodeLess.ai;
 
+import com.hjq.CodeLess.ai.tools.FileWriteTool;
+import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.ChatHistoryService;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -13,10 +17,13 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -94,6 +101,39 @@ class AiCodeGeneratorMemoryTest {
         assertTrue(requests.get(2).messages().stream().anyMatch(AiMessage.class::isInstance));
         assertEquals(java.util.Set.of(APP_A, APP_B), storedMessages.keySet());
         verify(store, never()).updateMessages(eq("default"), anyList());
+    }
+
+    @Test
+    void vueUsesTheReasoningModelAndExecutesFileTools(@TempDir Path project) throws Exception {
+        ReflectionTestUtils.setField(factory, "reasoningStreamingChatModel", new StreamingChatModel() {
+            @Override
+            public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
+                requests.add(request);
+                AiMessage reply;
+                if (requests.size() == 1) {
+                    var unknown = ToolExecutionRequest.builder().id("1").name("unknownTool").arguments("{}").build();
+                    var write = ToolExecutionRequest.builder().id("2").name("writeFile")
+                            .arguments("""
+                                    {"relativeFilePath":"src/App.vue","content":"<template>你好</template>"}
+                                    """)
+                            .build();
+                    reply = AiMessage.from(List.of(unknown, write));
+                } else {
+                    reply = AiMessage.from("done");
+                }
+                handler.onCompleteResponse(ChatResponse.builder().aiMessage(reply).build());
+            }
+        });
+        var vue = factory.createAiCodeGeneratorService(APP_A, CodeGenTypeEnum.VUE_PROJECT, new FileWriteTool(project));
+        EntryPoint.consume(vue.generateVueProjectCodeTokenStream(APP_A, "Vue project"));
+
+        assertEquals(2, requests.size());
+        assertEquals("writeFile", requests.get(0).toolSpecifications().get(0).name());
+        assertTrue(requests.get(1).messages().stream().filter(ToolExecutionResultMessage.class::isInstance)
+                .map(ToolExecutionResultMessage.class::cast)
+                .anyMatch(message -> message.text().equals("Error: there is no tool called unknownTool")));
+        assertEquals("<template>你好</template>", Files.readString(project.resolve("src/App.vue")));
+        assertEquals(java.util.Set.of(APP_A), storedMessages.keySet());
     }
 
     @Test

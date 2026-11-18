@@ -39,6 +39,7 @@ public class CodeFileSaverExecutor {
         return switch (type) {
             case HTML -> htmlCodeFileSaver.saveToDirectory((HtmlCodeResult) result, directory);
             case MULTI_FILE -> multiFileCodeFileSaver.saveToDirectory((MultiFileCodeResult) result, directory);
+            case VUE_PROJECT -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Vue 工程由文件工具生成");
         };
     }
 }

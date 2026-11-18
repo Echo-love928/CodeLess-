@@ -1,13 +1,16 @@
 package com.hjq.CodeLess.core;
 
 import com.hjq.CodeLess.ai.AiCodeGeneratorService;
+import com.hjq.CodeLess.ai.AiCodeGeneratorServiceFactory;
 import com.hjq.CodeLess.ai.model.HtmlCodeResult;
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
+import com.hjq.CodeLess.ai.tools.FileWriteTool;
 import com.hjq.CodeLess.core.parser.CodeParserExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.AppVersionService;
+import com.hjq.CodeLess.service.AppVersionStorage;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -25,7 +28,13 @@ public class AiCodeGeneratorFacade {
     private AiCodeGeneratorService aiCodeGeneratorService;
 
     @Resource
+    private AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
+
+    @Resource
     private AppVersionService appVersionService;
+
+    @Resource
+    private AppVersionStorage appVersionStorage;
 
     /**
      * 统一入口：根据类型生成并保存代码
@@ -49,10 +58,7 @@ public class AiCodeGeneratorFacade {
                 MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(appId, generationPrompt);
                 yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
-            default -> {
-                String errorMessage = "不支持的生成类型：" + codeGenTypeEnum.getValue();
-                throw new BusinessException(ErrorCode.SYSTEM_ERROR, errorMessage);
-            }
+            case VUE_PROJECT -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Vue 工程需通过流式入口生成");
         };
     }
 
@@ -79,11 +85,33 @@ public class AiCodeGeneratorFacade {
                         aiCodeGeneratorService.generateMultiFileCodeTokenStream(appId, appVersionService.generationPrompt(appId, userMessage))));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
-            default -> {
-                String errorMessage = "不支持的生成类型：" + codeGenTypeEnum.getValue();
-                throw new BusinessException(ErrorCode.SYSTEM_ERROR, errorMessage);
-            }
+            case VUE_PROJECT -> generateVueProjectStream(userMessage, appId);
         };
+    }
+
+    private Flux<String> generateVueProjectStream(String userMessage, Long appId) {
+        return Flux.defer(() -> {
+            var directory = appVersionStorage.createVueProjectWorkspace();
+            var fileWriteTool = new FileWriteTool(directory);
+            return Flux.defer(() -> {
+                var type = CodeGenTypeEnum.VUE_PROJECT;
+                var service = aiCodeGeneratorServiceFactory.createAiCodeGeneratorService(appId, type, fileWriteTool);
+                String prompt = appVersionService.generationPrompt(appId, userMessage);
+                return CancellableTokenStream.toFlux(service.generateVueProjectCodeTokenStream(appId, prompt))
+                        .concatWith(Flux.defer(() -> {
+                            // 取消时的清理必须等正在提交的版本读取完临时文件。
+                            synchronized (fileWriteTool) {
+                                if (fileWriteTool.stopWriting()) {
+                                    appVersionService.saveGeneratedCode(directory, type, appId, userMessage);
+                                }
+                            }
+                            return Flux.empty();
+                        }));
+            }).doFinally(signal -> {
+                fileWriteTool.stopWriting();
+                appVersionStorage.discard(directory);
+            });
+        });
     }
 
 

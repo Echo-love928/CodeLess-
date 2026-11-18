@@ -1,6 +1,7 @@
 package com.hjq.CodeLess.service;
 
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
+import com.hjq.CodeLess.ai.tools.FileWriteTool;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,6 +28,27 @@ class AppVersionStorageTest {
         assertEquals("old", Files.readString(temp.resolve("output/multi_file_1/index.html")));
         assertEquals("old js", Files.readString(temp.resolve("output/multi_file_1/script.js")));
         assertThrows(RuntimeException.class, () -> storage.saveGenerated(1L, CodeGenTypeEnum.MULTI_FILE, 1, first));
+    }
+
+    @Test
+    void snapshotsVueProjectSourcesAndKeepsWritesInTheWorkspace() {
+        var storage = new AppVersionStorage(temp.resolve("output"), temp.resolve("versions"));
+        Path workspace = storage.createVueProjectWorkspace();
+        var tool = new FileWriteTool(workspace);
+        tool.writeFile("../outside.txt", "outside");
+        tool.writeFile(temp.resolve("outside.txt").toString(), "outside");
+        assertFalse(Files.exists(workspace.getParent().resolve("outside.txt")));
+        assertFalse(Files.exists(temp.resolve("outside.txt")));
+        tool.writeFile("index.html", "<div id=\"app\"></div>");
+        tool.writeFile("package.json", "{}");
+        tool.writeFile("src/App.vue", "<template>你好</template>");
+        tool.stopWriting();
+        tool.writeFile("src/App.vue", "late write");
+
+        storage.saveGenerated(1L, CodeGenTypeEnum.VUE_PROJECT, 1, workspace);
+        storage.discard(workspace);
+
+        assertEquals("<template>你好</template>", storage.readFiles(1L, "vue_project", 1).get("src/App.vue"));
     }
 
     @Test

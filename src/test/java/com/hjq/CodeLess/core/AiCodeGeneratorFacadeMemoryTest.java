@@ -34,7 +34,7 @@ class AiCodeGeneratorFacadeMemoryTest {
     }
 
     @ParameterizedTest
-    @EnumSource(CodeGenTypeEnum.class)
+    @EnumSource(value = CodeGenTypeEnum.class, names = {"HTML", "MULTI_FILE"})
     void synchronousGenerationPassesAppIdAndKeepsVersionContext(CodeGenTypeEnum type) {
         Object result;
         if (type == CodeGenTypeEnum.HTML) {
@@ -54,7 +54,7 @@ class AiCodeGeneratorFacadeMemoryTest {
     }
 
     @ParameterizedTest
-    @EnumSource(CodeGenTypeEnum.class)
+    @EnumSource(value = CodeGenTypeEnum.class, names = {"HTML", "MULTI_FILE"})
     void streamingGenerationIsLazyAndPassesTheAppId(CodeGenTypeEnum type) {
         var tokens = mock(TokenStream.class, RETURNS_SELF);
         if (type == CodeGenTypeEnum.HTML) {
