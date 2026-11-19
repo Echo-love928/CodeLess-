@@ -1,9 +1,13 @@
 package com.hjq.CodeLess.core;
 
+import cn.hutool.json.JSONUtil;
 import com.hjq.CodeLess.ai.AiCodeGeneratorService;
 import com.hjq.CodeLess.ai.AiCodeGeneratorServiceFactory;
 import com.hjq.CodeLess.ai.model.HtmlCodeResult;
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
+import com.hjq.CodeLess.ai.model.message.AiResponseMessage;
+import com.hjq.CodeLess.ai.model.message.ToolExecutedMessage;
+import com.hjq.CodeLess.ai.model.message.ToolRequestMessage;
 import com.hjq.CodeLess.ai.tools.FileWriteTool;
 import com.hjq.CodeLess.core.parser.CodeParserExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
@@ -11,6 +15,7 @@ import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.AppVersionService;
 import com.hjq.CodeLess.service.AppVersionStorage;
+import dev.langchain4j.service.TokenStream;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -97,7 +102,7 @@ public class AiCodeGeneratorFacade {
                 var type = CodeGenTypeEnum.VUE_PROJECT;
                 var service = aiCodeGeneratorServiceFactory.createAiCodeGeneratorService(appId, type, fileWriteTool);
                 String prompt = appVersionService.generationPrompt(appId, userMessage);
-                return CancellableTokenStream.toFlux(service.generateVueProjectCodeTokenStream(appId, prompt))
+                return processTokenStream(service.generateVueProjectCodeStream(appId, prompt))
                         .concatWith(Flux.defer(() -> {
                             // 取消时的清理必须等正在提交的版本读取完临时文件。
                             synchronized (fileWriteTool) {
@@ -114,6 +119,25 @@ public class AiCodeGeneratorFacade {
         });
     }
 
+    /** 将 Vue 生成过程中的模型回复和工具事件转换为 JSON 消息流。 */
+    private Flux<String> processTokenStream(TokenStream tokenStream) {
+        return Flux.create(sink -> {
+            var rememberHandle = CancellableTokenStream.trackCancellation(sink);
+            tokenStream.onPartialResponseWithContext((response, context) -> {
+                        rememberHandle.accept(context.streamingHandle());
+                        sink.next(JSONUtil.toJsonStr(new AiResponseMessage(response.text())));
+                    })
+                    .onPartialThinkingWithContext((thinking, context) -> rememberHandle.accept(context.streamingHandle()))
+                    .onPartialToolCallWithContext((toolCall, context) -> {
+                        rememberHandle.accept(context.streamingHandle());
+                        sink.next(JSONUtil.toJsonStr(new ToolRequestMessage(toolCall)));
+                    })
+                    .onToolExecuted(execution -> sink.next(JSONUtil.toJsonStr(new ToolExecutedMessage(execution))))
+                    .onCompleteResponse(response -> sink.complete())
+                    .onError(sink::error)
+                    .start();
+        });
+    }
 
     /**
      * 通用流式代码处理方法

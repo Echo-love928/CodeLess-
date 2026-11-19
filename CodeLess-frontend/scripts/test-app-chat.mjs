@@ -44,7 +44,7 @@ const mountPage = (options = {}) => {
     userId: ownerId,
     appName: '测试应用',
     initPrompt: options.initPrompt ?? '创建一个咖啡馆网站',
-    codeGenType: 'html',
+    codeGenType: options.codeGenType ?? 'html',
   }
   const historyCalls = []
   const generationCalls = []
@@ -118,7 +118,9 @@ const mountPage = (options = {}) => {
       body: new ReadableStream({
         start(controller) {
           controller.enqueue(
-            new TextEncoder().encode('data: "网站已生成"\n\nevent: done\ndata: {}\n\n'),
+            new TextEncoder().encode(
+              options.stream ?? 'data: "网站已生成"\n\nevent: done\ndata: {}\n\n',
+            ),
           )
           controller.close()
         },
@@ -164,6 +166,34 @@ test('an owned app with empty history automatically sends initPrompt without URL
     assert.equal(page.generationCalls.length, 1)
     assert.equal(page.generationCalls[0].searchParams.get('message'), '创建一个咖啡馆网站')
     assert.equal(page.state.chatMessages.length, 2)
+    assert.equal(page.state.previewReady, true)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('Vue generation shows tool progress and appends only AI text to the reply', async () => {
+  const events = [
+    { type: 'tool_request', name: 'writeFile', arguments: '{' },
+    { type: 'tool_executed', result: '文件写入成功: src/App.vue' },
+    { type: 'ai_response', data: '网站已生成' },
+    { type: 'ai_response', data: '。' },
+  ]
+  const stream = events
+    .map((event) => `data: ${JSON.stringify({ d: JSON.stringify(event) })}\n\n`)
+    .join('')
+  const page = mountPage({
+    codeGenType: 'vue_project',
+    initPrompt: '',
+    stream: `${stream}event: done\n\n`,
+  })
+  try {
+    await settle(() => !page.state.initializing)
+    const progress = []
+    vue.watch(() => page.state.toolProgress, (value) => progress.push(value), { flush: 'sync' })
+    await page.state.sendMessage('创建 Vue 项目')
+    assert.deepEqual(progress, ['正在生成项目文件', '文件写入成功: src/App.vue', ''])
+    assert.equal(page.state.chatMessages.at(-1).content, '网站已生成。')
     assert.equal(page.state.previewReady, true)
   } finally {
     page.mounted.unmount()

@@ -16,9 +16,6 @@ public interface AiCodeGeneratorService {
     @SystemMessage(fromResource = "prompt/codegen-multi-file-stream-system-prompt.txt")
     TokenStream generateMultiFileCodeTokenStream(@MemoryId Long appId, @UserMessage String userMessage);
 
-    @SystemMessage(fromResource = "prompt/codegen-vue-project-system-prompt.txt")
-    TokenStream generateVueProjectCodeTokenStream(@MemoryId Long appId, @UserMessage String userMessage);
-
     /**
      * 生成 HTML 代码
      *
@@ -67,8 +64,6 @@ public interface AiCodeGeneratorService {
      * @return 生成过程的流式响应
      */
     @SystemMessage(fromResource = "prompt/codegen-vue-project-system-prompt.txt")
-    Flux<String> generateVueProjectCodeStream(@MemoryId long appId, @UserMessage String userMessage);
-
-
+    TokenStream generateVueProjectCodeStream(@MemoryId Long appId, @UserMessage String userMessage);
 }
 

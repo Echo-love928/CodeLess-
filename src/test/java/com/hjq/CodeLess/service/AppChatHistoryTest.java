@@ -1,6 +1,9 @@
 package com.hjq.CodeLess.service;
 
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
+import com.hjq.CodeLess.core.handler.JsonMessageStreamHandler;
+import com.hjq.CodeLess.core.handler.SimpleTextStreamHandler;
+import com.hjq.CodeLess.core.handler.StreamHandlerExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.model.entity.App;
 import com.hjq.CodeLess.model.entity.User;
@@ -8,6 +11,8 @@ import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.impl.AppServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
@@ -33,6 +38,8 @@ class AppChatHistoryTest {
     void setup() {
         ReflectionTestUtils.setField(service, "chatHistoryService", history);
         ReflectionTestUtils.setField(service, "aiCodeGeneratorFacade", generator);
+        ReflectionTestUtils.setField(service, "streamHandlerExecutor",
+                new StreamHandlerExecutor(new SimpleTextStreamHandler(), new JsonMessageStreamHandler()));
         ReflectionTestUtils.setField(service, "appCoverGeneratorService", covers);
         ReflectionTestUtils.setField(service, "appGenerationService", generation);
         doReturn(App.builder().id(1L).userId(2L).codeGenType("html").build()).when(service).getById(1L);
@@ -40,9 +47,13 @@ class AppChatHistoryTest {
         when(covers.generateCover(1L, "html")).thenReturn(Optional.empty());
     }
 
-    @Test
-    void savesUserThenCompleteAiResponseAndPreservesStream() {
-        when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.HTML, 1L))
+    @ParameterizedTest
+    @EnumSource(value = CodeGenTypeEnum.class, names = {"HTML", "MULTI_FILE"})
+    void savesUserThenCompleteAiResponseAndPreservesPlainTextStream(CodeGenTypeEnum codeGenType) {
+        String type = codeGenType.getValue();
+        doReturn(App.builder().id(1L).userId(2L).codeGenType(type).build()).when(service).getById(1L);
+        when(covers.generateCover(1L, type)).thenReturn(Optional.empty());
+        when(generator.generateAndSaveCodeStream("generate", codeGenType, 1L))
                 .thenReturn(Flux.just("hello", " world"));
         var stream = service.chatToGenCode(1L, "generate", owner);
         verifyNoInteractions(history, generator);
@@ -50,9 +61,31 @@ class AppChatHistoryTest {
         assertEquals(List.of("", "hello", " world"), stream.collectList().block(Duration.ofSeconds(5)));
         var order = inOrder(history, generator, covers);
         order.verify(history).addChatMessage(1L, "generate", "user", 2L);
-        order.verify(generator).generateAndSaveCodeStream("generate", CodeGenTypeEnum.HTML, 1L);
+        order.verify(generator).generateAndSaveCodeStream("generate", codeGenType, 1L);
         order.verify(history).addChatMessage(1L, "hello world", "ai", 2L);
-        order.verify(covers).generateCover(1L, "html");
+        order.verify(covers).generateCover(1L, type);
+        verifyNoMoreInteractions(history);
+    }
+
+    @Test
+    void forwardsVueToolEventsAndSavesOnlyAiText() {
+        doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
+        when(covers.generateCover(1L, "vue_project")).thenReturn(Optional.empty());
+        var events = List.of(
+                "{\"type\":\"ai_response\",\"data\":\"已生成\"}",
+                "{\"type\":\"tool_request\",\"name\":\"writeFile\"}",
+                "{\"type\":\"tool_executed\",\"result\":\"文件写入成功\"}",
+                "{\"type\":\"ai_response\",\"data\":\"项目。\"}"
+        );
+        when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.VUE_PROJECT, 1L))
+                .thenReturn(Flux.fromIterable(events));
+
+        var received = service.chatToGenCode(1L, "generate", owner).collectList().block(Duration.ofSeconds(5));
+
+        assertEquals("", received.get(0));
+        assertEquals(events, received.subList(1, received.size()));
+        verify(history).addChatMessage(1L, "generate", "user", 2L);
+        verify(history).addChatMessage(1L, "已生成项目。", "ai", 2L);
         verifyNoMoreInteractions(history);
     }
 

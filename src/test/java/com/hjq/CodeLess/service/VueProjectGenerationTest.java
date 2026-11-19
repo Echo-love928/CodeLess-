@@ -16,6 +16,8 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.PartialResponse;
 import dev.langchain4j.model.chat.response.PartialResponseContext;
+import dev.langchain4j.model.chat.response.PartialToolCall;
+import dev.langchain4j.model.chat.response.PartialToolCallContext;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.chat.response.StreamingHandle;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,6 +72,12 @@ class VueProjectGenerationTest {
                                             "relativeFilePath", file.getKey(), "content", file.getValue())))
                                     .build())
                             .toList();
+                    var toolContext = new PartialToolCallContext(mock(StreamingHandle.class));
+                    for (int index = 0; index < tools.size(); index++) {
+                        var tool = tools.get(index);
+                        handler.onPartialToolCall(PartialToolCall.builder()
+                                .index(index).id(tool.id()).name(tool.name()).partialArguments("{").build(), toolContext);
+                    }
                     handler.onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.from(tools)).build());
                     return;
                 }
@@ -107,7 +116,27 @@ class VueProjectGenerationTest {
         var messages = facade.generateAndSaveCodeStream(prompt, type, appId)
                 .collectList().block(Duration.ofSeconds(5));
 
-        assertEquals(List.of(completion), messages);
+        var events = messages.stream().map(JSONUtil::parseObj).toList();
+        int toolCount = expectedFiles.size();
+        assertEquals(toolCount * 2 + 1, events.size());
+        var requests = events.subList(0, toolCount);
+        var requestedPaths = requests.stream().map(event -> event.getStr("id")).collect(Collectors.toSet());
+        assertEquals(expectedFiles.keySet(), requestedPaths);
+        for (var event : requests) {
+            assertEquals("tool_request", event.getStr("type"));
+            assertEquals("writeFile", event.getStr("name"));
+            assertEquals("{", event.getStr("arguments"));
+        }
+        for (var event : events.subList(toolCount, toolCount * 2)) {
+            assertEquals("tool_executed", event.getStr("type"));
+            assertEquals("writeFile", event.getStr("name"));
+            assertEquals("文件写入成功: " + event.getStr("id"), event.getStr("result"));
+            var arguments = JSONUtil.parseObj(event.getStr("arguments"));
+            assertEquals(expectedFiles.get(event.getStr("id")), arguments.getStr("content"));
+        }
+        var response = events.get(toolCount * 2);
+        assertEquals("ai_response", response.getStr("type"));
+        assertEquals(completion, response.getStr("data"));
         assertEquals(2, modelRequests.size());
         assertTrue(modelRequests.get(0).toolSpecifications().stream()
                 .anyMatch(tool -> tool.name().equals("writeFile")));

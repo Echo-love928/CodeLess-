@@ -71,6 +71,7 @@ const previewReady = ref(false)
 const messageListRef = ref<HTMLElement>()
 const isAtBottom = ref(true)
 const generationStageIndex = ref(0)
+const toolProgress = ref('')
 const generationStages = [
   '正在理解你的修改需求',
   '正在编写页面结构',
@@ -136,7 +137,7 @@ const staticKey = computed(() =>
 const previewUrl = computed(() =>
   staticKey.value ? `${PREVIEW_BASE_URL}/${staticKey.value}/?v=${previewVersion.value}` : '',
 )
-const generationStage = computed(() => generationStages[generationStageIndex.value])
+const generationStage = computed(() => toolProgress.value || generationStages[generationStageIndex.value])
 
 const updateScrollPosition = () => {
   const list = messageListRef.value
@@ -152,6 +153,7 @@ const scrollToBottom = async (force = false) => {
 }
 const startGenerationStages = () => {
   generationStageIndex.value = 0
+  toolProgress.value = ''
   window.clearInterval(generationStageTimer)
   generationStageTimer = window.setInterval(() => {
     generationStageIndex.value = (generationStageIndex.value + 1) % generationStages.length
@@ -160,6 +162,7 @@ const startGenerationStages = () => {
 const stopGenerationStages = () => {
   window.clearInterval(generationStageTimer)
   generationStageTimer = undefined
+  toolProgress.value = ''
 }
 const flushMarkdownRender = () => {
   window.clearTimeout(markdownRenderTimer)
@@ -186,6 +189,28 @@ const decodeEventData = (raw: string) => {
     return raw
   } catch {
     return raw
+  }
+}
+
+const decodeVueProjectChunk = (chunk: string) => {
+  let payload: { type?: string; data?: unknown; result?: unknown } | null
+  try {
+    payload = JSON.parse(chunk)
+  } catch {
+    return chunk
+  }
+  switch (payload?.type) {
+    case 'ai_response':
+      toolProgress.value = ''
+      return typeof payload.data === 'string' ? payload.data : ''
+    case 'tool_request':
+      toolProgress.value = '正在生成项目文件'
+      return ''
+    case 'tool_executed':
+      toolProgress.value = typeof payload.result === 'string' ? payload.result : ''
+      return ''
+    default:
+      return chunk
   }
 }
 
@@ -219,7 +244,10 @@ const appendSseEvent = (event: string, assistant: ChatMessage) => {
   if (eventName === 'done' || eventName === 'stopped') return eventName
   if (eventName === 'error') throw new Error(decodeEventData(data) || '代码生成失败')
   if (data && data !== '[DONE]') {
-    assistant.content += decodeEventData(data)
+    const chunk = decodeEventData(data)
+    const text = app.value?.codeGenType === 'vue_project' ? decodeVueProjectChunk(chunk) : chunk
+    if (!text) return
+    assistant.content += text
     scheduleMarkdownRender(assistant)
   }
 }

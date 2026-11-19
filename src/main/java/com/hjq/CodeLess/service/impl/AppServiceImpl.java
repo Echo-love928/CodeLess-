@@ -6,6 +6,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
+import com.hjq.CodeLess.core.handler.StreamHandlerExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.exception.ThrowUtils;
@@ -63,6 +64,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
 
     @Resource
+    private StreamHandlerExecutor streamHandlerExecutor;
+
+    @Resource
     private ChatHistoryService chatHistoryService;
 
     @Resource
@@ -110,28 +114,15 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         return appGenerationService.generate(appId, () -> {
             // 5. 生成任务注册成功后，添加用户消息到对话历史。
             chatHistoryService.addChatMessage(appId, message, ChatHistoryMessageTypeEnum.USER.getValue(), loginUser.getId());
-            // 6. 调用 AI 生成代码，并为本次订阅收集完整回复。
-            StringBuilder aiResponseBuilder = new StringBuilder();
+            // 6. 调用 AI 生成代码，由执行器按生成类型记录回复。
             Flux<String> codeStream = Flux.defer(() ->
-                            aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId))
-                    .doOnNext(aiResponseBuilder::append)
-                    .doOnComplete(() -> {
-                        // 7. 流式生成完成后，保存非空的 AI 回复。
-                        String aiResponse = aiResponseBuilder.toString();
-                        if (StrUtil.isNotBlank(aiResponse)) {
-                            chatHistoryService.addChatMessage(appId, aiResponse,
-                                    ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
-                        }
-                    })
-                    .doOnError(error -> {
-                        String errorMessage = "AI回复失败: " + error.getMessage();
-                        chatHistoryService.addChatMessage(appId, errorMessage,
-                                ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
-                    });
+                    aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId));
+            Flux<String> handledStream = streamHandlerExecutor.doExecute(
+                    codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
             Mono<String> coverTask = Mono.<String>fromRunnable(() -> generateAndSaveAppCover(appId, codeGenTypeStr))
                     .subscribeOn(Schedulers.boundedElastic());
             // Flush SSE headers after task registration so stop is available before the first model token.
-            return Flux.just("").concatWith(codeStream).concatWith(coverTask);
+            return Flux.just("").concatWith(handledStream).concatWith(coverTask);
         }, status -> updateGenerationStatus(appId, status));
     }
 

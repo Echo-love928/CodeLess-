@@ -125,7 +125,7 @@ class AiCodeGeneratorMemoryTest {
             }
         });
         var vue = factory.createAiCodeGeneratorService(APP_A, CodeGenTypeEnum.VUE_PROJECT, new FileWriteTool(project));
-        EntryPoint.consume(vue.generateVueProjectCodeTokenStream(APP_A, "Vue project"));
+        EntryPoint.consume(vue.generateVueProjectCodeStream(APP_A, "Vue project"));
 
         assertEquals(2, requests.size());
         assertEquals("writeFile", requests.get(0).toolSpecifications().get(0).name());

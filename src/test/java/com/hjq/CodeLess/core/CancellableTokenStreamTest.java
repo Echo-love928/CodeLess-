@@ -2,6 +2,8 @@ package com.hjq.CodeLess.core;
 
 import dev.langchain4j.model.chat.response.PartialResponse;
 import dev.langchain4j.model.chat.response.PartialResponseContext;
+import dev.langchain4j.model.chat.response.PartialToolCall;
+import dev.langchain4j.model.chat.response.PartialToolCallContext;
 import dev.langchain4j.model.chat.response.StreamingHandle;
 import dev.langchain4j.service.TokenStream;
 import org.junit.jupiter.api.Test;
@@ -40,6 +42,24 @@ class CancellableTokenStreamTest {
         Disposable subscription = CancellableTokenStream.toFlux(stream).subscribe();
         subscription.dispose();
         callback.get().accept(new PartialResponse("late"), new PartialResponseContext(handle));
+        verify(handle).cancel();
+    }
+
+    @Test
+    void cancellationReachesModelDuringToolArgumentsBeforeTextArrives() {
+        TokenStream stream = mock(TokenStream.class, RETURNS_SELF);
+        AtomicReference<BiConsumer<PartialToolCall, PartialToolCallContext>> callback = new AtomicReference<>();
+        doAnswer(invocation -> {
+            callback.set(invocation.getArgument(0));
+            return stream;
+        }).when(stream).onPartialToolCallWithContext(any());
+        StreamingHandle handle = mock(StreamingHandle.class);
+        Disposable subscription = CancellableTokenStream.toFlux(stream).subscribe();
+        var toolCall = PartialToolCall.builder().name("writeFile").partialArguments("{").build();
+
+        callback.get().accept(toolCall, new PartialToolCallContext(handle));
+        subscription.dispose();
+
         verify(handle).cancel();
     }
 }
