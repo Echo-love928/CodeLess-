@@ -19,15 +19,7 @@ import com.hjq.CodeLess.model.enums.ChatHistoryMessageTypeEnum;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.model.vo.AppVO;
 import com.hjq.CodeLess.model.vo.UserVO;
-import com.hjq.CodeLess.service.AppService;
-import com.hjq.CodeLess.service.ChatHistoryService;
-import com.hjq.CodeLess.service.AppCoverGeneratorService;
-import com.hjq.CodeLess.service.AppGenerationService;
-import com.hjq.CodeLess.service.AppDeploymentStorage;
-import com.hjq.CodeLess.service.AppVersionService;
-import com.hjq.CodeLess.service.AppDeletionService;
-import com.hjq.CodeLess.service.AppMetadataRules;
-import com.hjq.CodeLess.service.UserService;
+import com.hjq.CodeLess.service.*;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
@@ -47,6 +39,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +51,8 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppService {
+
+    private final ConcurrentMap<Long, Object> pendingScreenshots = new ConcurrentHashMap<>();
 
     @Resource
     private UserService userService;
@@ -87,6 +83,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Resource
     private AppDeletionService appDeletionService;
+
+    @Resource
+    private ScreenshotService screenshotService;
 
     @Override
     public synchronized boolean deleteApp(Long appId, User loginUser) {
@@ -226,8 +225,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         updateApp.setDeployedTime(LocalDateTime.now());
         appDeploymentStorage.publish(codeGenType, appId, deployKey, () ->
                 ThrowUtils.throwIf(!this.updateById(updateApp), ErrorCode.OPERATION_ERROR, "更新应用部署信息失败"));
-        // 9. 返回可访问的 URL
-        return String.format("%s/%s/", StrUtil.removeSuffix(deployBaseUrl.trim(), "/"), deployKey);
+        String appDeployUrl = String.format("%s/%s/", StrUtil.removeSuffix(deployBaseUrl.trim(), "/"), deployKey);
+        generateAppScreenshotAsync(appId, appDeployUrl);
+        return appDeployUrl;
     }
 
     @Override
@@ -246,6 +246,37 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         else persist.run();
         return true;
     }
+
+    /**
+     * 异步生成应用截图并更新封面
+     *
+     * @param appId  应用ID
+     * @param appUrl 应用访问URL
+     */
+    @Override
+    public void generateAppScreenshotAsync(Long appId, String appUrl) {
+        Object task = new Object();
+        pendingScreenshots.put(appId, task);
+        Thread.ofVirtual().name("app-screenshot-" + appId).start(() -> {
+            try {
+                String screenshotUrl = screenshotService.generateAndUploadScreenshot(appUrl);
+                pendingScreenshots.computeIfPresent(appId, (id, latestTask) -> {
+                    if (latestTask != task) return latestTask;
+                    App coverUpdate = new App();
+                    coverUpdate.setCover(screenshotUrl);
+                    boolean updated = update(coverUpdate, QueryWrapper.create()
+                            .eq("id", id).eq("deploymentStatus", "online"));
+                    if (!updated) log.warn("应用 {} 的部署截图已上传，但未更新封面", id);
+                    return null;
+                });
+            } catch (Exception e) {
+                log.warn("应用 {} 部署截图任务失败", appId, e);
+            } finally {
+                pendingScreenshots.remove(appId, task);
+            }
+        });
+    }
+
 
 
     @Override

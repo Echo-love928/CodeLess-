@@ -107,6 +107,7 @@ class AppDeploymentStorageTest {
         calls.verify(service).updateById(update.capture());
         assertEquals(4, update.getValue().getDeployedVersion());
         assertEquals("online", update.getValue().getDeploymentStatus());
+        calls.verify(service).generateAppScreenshotAsync(123L, "http://localhost:9090/abc123/");
     }
 
     @Test
@@ -128,6 +129,7 @@ class AppDeploymentStorageTest {
         assertEquals("last published build", Files.readString(deployedEntry));
         verify(builder, times(2)).buildProject(project.toString());
         verify(service, never()).updateById(any(App.class));
+        verify(service, never()).generateAppScreenshotAsync(anyLong(), anyString());
     }
 
     private AppServiceImpl deploymentService(VueProjectBuilder builder) {
@@ -138,6 +140,7 @@ class AppDeploymentStorageTest {
                 new AppDeploymentStorage(temp.resolve("output"), temp.resolve("deploy")));
         ReflectionTestUtils.setField(service, "vueProjectBuilder", builder);
         ReflectionTestUtils.setField(service, "deployBaseUrl", "http://localhost:9090");
+        doNothing().when(service).generateAppScreenshotAsync(anyLong(), anyString());
         doReturn(App.builder().id(123L).userId(2L).codeGenType("vue_project").visibility("public")
                 .generationStatus("completed").deployKey("abc123").version(4).build()).when(service).getById(123L);
         return service;
