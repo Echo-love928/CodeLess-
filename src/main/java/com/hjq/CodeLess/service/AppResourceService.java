@@ -39,5 +39,18 @@ public class AppResourceService {
         for (Path current = file; current != null && current.startsWith(root); current = current.getParent()) if (Files.isSymbolicLink(current)) throw missing();
         return file;
     }
+    public Path requirePreviewDirectory(App app) {
+        String key = app.getCodeGenType() + "_" + app.getId();
+        String entry = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(app.getCodeGenType())
+                ? "/dist/index.html" : "/";
+        try {
+            Path file = resolve(app, key, entry);
+            if (!Files.isReadable(file)) throw missing();
+            return root.resolve(key);
+        } catch (BusinessException | IOException failure) {
+            throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "应用尚未生成可用的预览，请先生成应用");
+        }
+    }
+
     private BusinessException missing() { return new BusinessException(ErrorCode.NOT_FOUND_ERROR, "资源不存在"); }
 }

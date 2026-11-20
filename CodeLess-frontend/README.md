@@ -14,6 +14,12 @@
 
 Vite 变量在启动或构建时读取，修改后需重新启动前端开发服务或重新构建；后端变量修改后需重启服务。
 
+## 生成 OpenAPI 请求代码
+
+启动 Spring Boot 后，在前端目录执行 `npm run openapi2ts`。命令默认读取 `VITE_API_BASE_URL` 下的 `/v3/api-docs`，未配置时使用 `http://localhost:8123/api/v3/api-docs`。也可以通过 `OPENAPI_SCHEMA_URL` 指定完整的文档地址。
+
+生成结果位于 `tmp/openapi/api/`，供核对接口和类型。项目运行时继续使用 `src/api/`。
+
 ## 头像上传
 
 个人中心支持填写头像图片 URL，也支持上传 PNG、JPG/JPEG、WebP 图片（最多 5 MB）。上传后会立即保存当前用户头像，不需要再点击“保存修改”；昵称和简介仍通过“保存修改”提交。

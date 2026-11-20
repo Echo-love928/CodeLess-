@@ -16,4 +16,6 @@
 
 上线前先执行 sql/migrations/20261115_app_lifecycle.sql，再重启后端。脚本可重复执行，并兼容仅缺少其中一个字段的数据库；已有状态不会因重复执行被重置。已有自动化测试中调用真实 AI、数据库和浏览器的集成测试需要相应服务可用。
 
+启用代码下载统计前，已有数据库需执行 `sql/migrations/20261120_app_download_count.sql`。原有应用从 0 次开始，重复执行迁移会保留已累计的次数。应用所有者可在生成预览可用后下载源代码，成功发送 ZIP 后累计一次。所有者和管理员可查看次数。
+
 如果启动报 `Unknown column 'generationStatus' in 'field list'`，说明应用代码已更新，但当前连接的数据库还没有执行上述迁移。只修改 create_table.sql 不会更新已存在的 app 表；应在后端实际连接的 CodeLess 数据库执行迁移，再启动后端。

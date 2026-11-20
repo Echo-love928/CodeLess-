@@ -72,7 +72,22 @@ const mountPage = (options = {}) => {
   const previewCalls = []
   const errors = []
   const exportCalls = []
+  const codeRequests = []
   const downloads = []
+  const appCodeDownload = loadConfigModule('../src/utils/appCodeDownload.ts', {
+    '@/request': {
+      default: async (url, requestOptions) => {
+        codeRequests.push({ url, requestOptions })
+        return (
+          options.codeResponse?.() ?? {
+            status: 200,
+            data: new Blob(['zip test'], { type: 'application/zip' }),
+            headers: { 'content-disposition': 'attachment; filename="project-code.zip"' },
+          }
+        )
+      },
+    },
+  })
   const api = {
     exportAppChatHistory: async (params) => {
       exportCalls.push({ ...params })
@@ -85,7 +100,9 @@ const mountPage = (options = {}) => {
               new Blob(['# 完整历史'], { type: 'text/markdown;charset=utf-8' })),
       }
     },
-    getAppVoById: async () => ({ data: { code: 0, data: { ...app } } }),
+    getAppVoById: async () => ({
+      data: { code: 0, data: { ...app, downloadCount: String(downloads.length) } },
+    }),
     listAppChatHistory: async (params) => {
       historyCalls.push({ ...params })
       if (options.failHistory && historyCalls.length === 1) throw new Error('历史加载失败')
@@ -120,6 +137,8 @@ const mountPage = (options = {}) => {
     '@/utils/appId': { useAppId: () => vue.ref(appId), isValidAppId: () => true },
     '@/utils/appStatus': { isAppOnline: () => false },
     '@/composables/useChatHistory': { useChatHistory },
+    '@/utils/appCodeDownload': appCodeDownload,
+    '@/utils/blobDownload': { downloadBlob: (blob, fileName) => downloads.push({ blob, fileName }) },
     '@/utils/chatHistoryExport': {
       assertMarkdownExport,
       chatHistoryExportFileName,
@@ -185,9 +204,71 @@ const mountPage = (options = {}) => {
     errors,
     appId,
     exportCalls,
+    codeRequests,
     downloads,
   }
 }
+
+test('the owner cannot request the archive until the preview is ready', async () => {
+  const page = mountPage({ initPrompt: '', previewAvailable: () => false })
+  try {
+    await settle(() => !page.state.initializing)
+    assert.equal(page.state.previewReady, false)
+    assert.equal(page.state.canDownloadCode, false)
+    await page.state.downloadCode()
+    assert.equal(page.codeRequests.length, 0)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('an owner with a ready preview can download a ZIP and see the updated count', async () => {
+  const page = mountPage({ initPrompt: '' })
+  try {
+    await settle(() => !page.state.initializing)
+    assert.equal(page.state.canDownloadCode, true)
+    await Promise.all([page.state.downloadCode(), page.state.downloadCode()])
+    assert.equal(page.codeRequests.length, 1)
+    assert.equal(page.codeRequests[0].url, `/app/download/${page.appId}`)
+    assert.equal(page.codeRequests[0].requestOptions.responseType, 'blob')
+    assert.equal(page.downloads[0].fileName, 'project-code.zip')
+    assert.equal(page.downloads[0].blob.type, 'application/zip')
+    assert.equal(page.state.app.downloadCount, '1')
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('the ZIP download shows a business error returned with HTTP 200 as JSON', async () => {
+  const page = mountPage({
+    initPrompt: '',
+    codeResponse: () => ({
+      status: 200,
+      data: new Blob(['{"message":"应用代码不存在，请先生成代码"}'], { type: 'application/json' }),
+      headers: {},
+    }),
+  })
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.downloadCode()
+    assert.deepEqual(page.downloads, [])
+    assert.deepEqual(page.errors, ['应用代码不存在，请先生成代码'])
+    assert.equal(page.state.downloadingCode, false)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('an administrator who does not own the app cannot request the code archive', async () => {
+  const page = mountPage({ initPrompt: '', otherOwner: true, admin: true })
+  try {
+    await settle(() => !page.state.initializing)
+    await page.state.downloadCode()
+    assert.deepEqual(page.codeRequests, [])
+  } finally {
+    page.mounted.unmount()
+  }
+})
 
 test('an owned app with empty history automatically sends initPrompt without URL flags', async () => {
   const page = mountPage()

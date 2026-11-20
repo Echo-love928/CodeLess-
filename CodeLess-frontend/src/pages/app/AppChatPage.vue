@@ -22,7 +22,7 @@ import {
 import { useLoginUserStore } from '@/stores/loginUser'
 import { renderMarkdown } from '@/utils/markdown'
 import { API_BASE_URL, getStaticPreviewUrl } from '@/config/urls'
-import { CodeGenTypeEnum } from '@/constants/codeGenType'
+import { CodeGenTypeEnum, getCodeGenTypeLabel } from '@/constants/codeGenType'
 import logoUrl from '@/assets/logo.png'
 import AppDetailsModal from '@/components/AppDetailsModal.vue'
 import DeploymentSuccessModal from '@/components/DeploymentSuccessModal.vue'
@@ -34,6 +34,8 @@ import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { visibilityLabel } from '@/utils/appPrivacy'
 import { exportAppChatHistory, listAppChatHistory } from '@/api/chatHistoryController'
 import { useChatHistory } from '@/composables/useChatHistory'
+import { getAppCodeArchive, type AppWithDownloadCount } from '@/utils/appCodeDownload'
+import { downloadBlob } from '@/utils/blobDownload'
 import {
   assertMarkdownExport,
   chatHistoryExportFileName,
@@ -49,7 +51,7 @@ type ChatMessage = {
 }
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
-const app = ref<API.AppVO>()
+const app = ref<AppWithDownloadCount>()
 const liveMessages = ref<ChatMessage[]>([])
 let nextMessageId = 0
 const initializing = ref(true)
@@ -61,6 +63,7 @@ const generating = ref(false)
 const generationAccepted = ref(false)
 const stopping = ref(false)
 const pausing = ref(false)
+const downloadingCode = ref(false)
 const deploying = ref(false)
 const deploySuccessOpen = ref(false)
 const deploymentUrl = ref('')
@@ -127,6 +130,9 @@ const canChat = computed(
 )
 const isGenerating = computed(
   () => generating.value || app.value?.generationStatus === 'generating',
+)
+const canDownloadCode = computed(
+  () => canChat.value && !initializing.value && !isGenerating.value && previewReady.value,
 )
 const canStop = computed(
   () =>
@@ -427,6 +433,21 @@ const sendMessage = async (preset?: string) => {
   }
 }
 
+const downloadCode = async () => {
+  if (!canDownloadCode.value || downloadingCode.value) return
+  downloadingCode.value = true
+  try {
+    const { blob, fileName } = await getAppCodeArchive(appId.value)
+    if (disposed) return
+    downloadBlob(blob, fileName)
+    await refreshAppStatus().catch(() => {})
+  } catch (error) {
+    if (!disposed) message.error(error instanceof Error ? error.message : '下载代码失败，请稍后重试')
+  } finally {
+    downloadingCode.value = false
+  }
+}
+
 const deploy = async () => {
   if (!canChat.value || isGenerating.value || !previewReady.value) return
   deploying.value = true
@@ -602,10 +623,15 @@ onBeforeUnmount(() => {
   <a-spin :spinning="loading || initializing" tip="正在加载应用…">
     <main class="chat-page">
       <header class="chat-page__header">
-        <button class="app-name" type="button" @click="router.push('/')">
-          <img class="app-name__mark" :src="logoUrl" alt="" />
-          <span>{{ app?.appName || '未命名应用' }}</span>
-        </button>
+        <div class="app-heading">
+          <button class="app-name" type="button" @click="router.push('/')">
+            <img class="app-name__mark" :src="logoUrl" alt="" />
+            <span>{{ app?.appName || '未命名应用' }}</span>
+          </button>
+          <a-tag v-if="app?.codeGenType" class="app-heading__type" color="blue">
+            {{ getCodeGenTypeLabel(app.codeGenType) }}
+          </a-tag>
+        </div>
         <div class="header-actions">
           <a-tag>{{ visibilityLabel(app?.visibility) }}</a-tag>
           <a-tag v-if="app?.version" color="blue">当前 V{{ app.version }}</a-tag>
@@ -639,6 +665,15 @@ onBeforeUnmount(() => {
             :disabled="deploying"
             @click="pauseDeployment"
             ><template #icon><PauseOutlined /></template>下线</a-button
+          >
+          <a-button
+            v-if="canChat"
+            :loading="downloadingCode"
+            :disabled="!canDownloadCode"
+            :aria-busy="downloadingCode"
+            :title="!previewReady ? '生成可用预览后可以下载代码' : undefined"
+            @click="downloadCode"
+            ><template #icon><DownloadOutlined /></template>下载代码</a-button
           >
           <a-button
             v-if="canChat"
@@ -835,6 +870,16 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   border-bottom: 1px solid #e8edf4;
 }
+.app-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.app-heading__type {
+  flex: none;
+  margin-inline-end: 0;
+}
 .app-name {
   display: flex;
   min-width: 0;
@@ -846,9 +891,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-weight: 700;
 }
+.app-name > span {
+  overflow-wrap: anywhere;
+  text-align: start;
+}
 .app-name__mark {
   width: 32px;
   height: 32px;
+  flex: none;
   border-radius: 10px;
   border: 1px solid #e7edf5;
   background: #fff;

@@ -24,6 +24,7 @@ public class AppAccessPolicy {
     public AppVO redact(AppVO view, App app, User viewer) {
         if (!canManage(app, viewer)) {
             view.setInitPrompt(null);
+            view.setDownloadCount(null);
             view.setFeatureRequestMessage(null);
             view.setFeatureReviewMessage(null);
             if (!"approved".equals(view.getFeatureStatus())) view.setFeatureStatus("none");

@@ -4,6 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import com.hjq.CodeLess.ai.AiCodeGenTypeRoutingService;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
 import com.hjq.CodeLess.core.builder.VueProjectBuilder;
@@ -12,6 +13,7 @@ import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.exception.ThrowUtils;
 import com.hjq.CodeLess.mapper.AppMapper;
+import com.hjq.CodeLess.model.dto.app.AppAddRequest;
 import com.hjq.CodeLess.model.dto.app.AppQueryRequest;
 import com.hjq.CodeLess.model.entity.App;
 import com.hjq.CodeLess.model.entity.User;
@@ -34,6 +36,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.io.File;
 import java.io.Serializable;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +59,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Resource
     private UserService userService;
+    @Resource
+    private AppMetadataService appMetadataService;
+    @Resource
+    private AppNameGeneratorService appNameGeneratorService;
+    @Resource
+    private AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService;
 
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
@@ -94,6 +103,41 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
 
     @Value("${app.deploy.base-url}")
     private String deployBaseUrl;
+
+    @Override
+    public Long createApp(AppAddRequest appAddRequest, User loginUser) {
+        ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null, ErrorCode.NOT_LOGIN_ERROR);
+        String initPrompt = AppMetadataRules.text(appAddRequest.getInitPrompt(), 2000, "初始描述");
+        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
+
+        App app = new App();
+        app.setUserId(loginUser.getId());
+        appMetadataService.initialize(app, appAddRequest);
+        app.setInitPrompt(initPrompt);
+        app.setAppName(appNameGeneratorService.generateName(initPrompt));
+        app.setGenerationStatus("pending");
+        app.setDeploymentStatus("offline");
+        app.setVersion(0);
+        CodeGenTypeEnum selectedType = routeCodeGenType(initPrompt);
+        app.setCodeGenType(selectedType.getValue());
+
+        ThrowUtils.throwIf(!save(app), ErrorCode.OPERATION_ERROR);
+        log.info("应用创建成功，ID: {}, 类型: {}", app.getId(), selectedType.getValue());
+        return app.getId();
+    }
+
+    private CodeGenTypeEnum routeCodeGenType(String initPrompt) {
+        return Mono.fromCallable(() -> aiCodeGenTypeRoutingService.routeCodeGenType(initPrompt))
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(Duration.ofSeconds(8))
+                .onErrorResume(error -> {
+                    log.warn("AI 代码生成类型路由失败，使用默认类型：{}", error.getClass().getSimpleName());
+                    return Mono.empty();
+                })
+                .defaultIfEmpty(CodeGenTypeEnum.VUE_PROJECT)
+                .block();
+    }
 
     @Override
     public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {

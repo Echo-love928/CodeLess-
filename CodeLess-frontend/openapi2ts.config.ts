@@ -28,7 +28,7 @@ const markAsString = (schema?: MutableSchema) => {
 const config: GenerateServiceProps = {
   requestLibPath: "import request from '@/request'",
   schemaPath: 'http://localhost:8123/api/v3/api-docs',
-  serversPath: './src',
+  serversPath: './tmp/openapi',
   hook: {
     afterOpenApiDataInited(openAPIData) {
       const document = openAPIData as unknown as MutableOpenApi
@@ -41,6 +41,7 @@ const config: GenerateServiceProps = {
 
         // 新增应用、新增用户的返回值也是 Snowflake ID。
         if (schemaName === 'BaseResponseLong') markAsString(schema.properties?.data)
+        if (schemaName === 'AppVO') markAsString(schema.properties?.downloadCount)
       }
 
       for (const pathItem of Object.values(document.paths ?? {})) {

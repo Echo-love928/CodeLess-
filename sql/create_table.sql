@@ -47,6 +47,7 @@ create table app
     deploymentStatus varchar(20) default 'offline' not null comment 'online/offline',
     version int not null default 0 comment '当前代码版本，0 表示尚无快照',
     deployedVersion int null comment '线上代码版本',
+    downloadCount bigint not null default 0 comment '成功下载代码次数',
     deployKey    varchar(64)                        null comment '部署标识',
     deployedTime datetime                           null comment '部署时间',
     priority     int      default 0                 not null comment '优先级',

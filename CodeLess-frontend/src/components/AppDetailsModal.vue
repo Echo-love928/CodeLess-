@@ -3,12 +3,14 @@ import { computed } from 'vue'
 import { CalendarOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons-vue'
 import logoUrl from '@/assets/logo.png'
 import GenerationStatusTag from '@/components/GenerationStatusTag.vue'
+import { getCodeGenTypeLabel } from '@/constants/codeGenType'
 import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { visibilityLabel } from '@/utils/appPrivacy'
+import type { AppWithDownloadCount } from '@/utils/appCodeDownload'
 
 const props = defineProps<{
   open: boolean
-  app?: API.AppVO
+  app?: AppWithDownloadCount
   canEdit: boolean
   deleting: boolean
 }>()
@@ -53,11 +55,15 @@ const formatDateTime = (value?: string) => {
       <p>
         可见范围：<a-tag>{{ visibilityLabel(app?.visibility) }}</a-tag>
       </p>
+      <p>
+        生成类型：<a-tag color="blue">{{ getCodeGenTypeLabel(app?.codeGenType) }}</a-tag>
+      </p>
       <p v-if="app?.description">{{ app.description }}</p>
       <p v-if="app?.tags?.length">
         <a-tag v-for="tag in app.tags" :key="tag">{{ tag }}</a-tag>
       </p>
       <p>生成状态：<GenerationStatusTag :status="app?.generationStatus" /></p>
+      <p v-if="canEdit && app">下载次数：{{ app.downloadCount ?? '0' }}</p>
       <p>
         当前版本：{{ app?.version ? `V${app.version}` : '尚无版本快照'
         }}<template v-if="isAppOnline(app) && app?.deployedVersion">

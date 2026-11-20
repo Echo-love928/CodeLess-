@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 const sourceExtensions = new Set(['.ts', '.vue', '.js', '.mts', '.mjs'])
 const excludedDirectories = new Set(['.git', 'dist', 'memory', 'node_modules'])
+const generatedOpenApiDirectory = join(projectRoot, 'tmp', 'openapi')
 
 const rules = [
   {
@@ -35,7 +36,9 @@ const listSourceFiles = async (directory) => {
     entries.map((entry) => {
       const path = join(directory, entry.name)
       if (entry.isDirectory()) {
-        return excludedDirectories.has(entry.name) ? [] : listSourceFiles(path)
+        return excludedDirectories.has(entry.name) || path === generatedOpenApiDirectory
+          ? []
+          : listSourceFiles(path)
       }
       return [path]
     }),

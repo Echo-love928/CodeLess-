@@ -1,6 +1,7 @@
 package com.hjq.CodeLess.service;
 
 
+import com.hjq.CodeLess.model.dto.app.AppAddRequest;
 import com.hjq.CodeLess.model.dto.app.AppQueryRequest;
 import com.hjq.CodeLess.model.entity.User;
 import com.hjq.CodeLess.model.vo.AppVO;
@@ -17,6 +18,8 @@ import java.util.List;
  *
  */
 public interface AppService extends IService<App> {
+
+    Long createApp(AppAddRequest appAddRequest, User loginUser);
 
     /**
      * 通过对话生成应用代码

@@ -50,6 +50,8 @@ public class AppVO implements Serializable {
 
     private Integer deployedVersion;
 
+    private Long downloadCount;
+
     /**
      * 部署标识
      */

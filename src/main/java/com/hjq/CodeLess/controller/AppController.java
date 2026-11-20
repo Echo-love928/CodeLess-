@@ -7,34 +7,27 @@ import com.hjq.CodeLess.annotation.AuthCheck;
 import com.hjq.CodeLess.common.BaseResponse;
 import com.hjq.CodeLess.common.DeleteRequest;
 import com.hjq.CodeLess.common.ResultUtils;
-import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.constant.UserConstant;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.exception.ThrowUtils;
 import com.hjq.CodeLess.model.dto.app.*;
 import com.hjq.CodeLess.model.entity.User;
-import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.model.vo.AppVO;
-import com.hjq.CodeLess.service.UserService;
-import com.hjq.CodeLess.service.AppNameGeneratorService;
-import com.hjq.CodeLess.service.AppAccessPolicy;
-import com.hjq.CodeLess.service.AppMetadataService;
-import com.hjq.CodeLess.service.AppSearchService;
-import com.hjq.CodeLess.service.AppBrowseLimiter;
+import com.hjq.CodeLess.service.*;
 import com.mybatisflex.core.paginate.Page;
-import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import com.hjq.CodeLess.model.entity.App;
-import com.hjq.CodeLess.service.AppService;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.time.LocalDateTime;
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -55,7 +48,8 @@ public class AppController {
     private UserService userService;
 
     @Resource
-    private AppNameGeneratorService appNameGeneratorService;
+    private ProjectDownloadService projectDownloadService;
+
     @Resource private AppAccessPolicy appAccessPolicy;
     @Resource private AppMetadataService appMetadataService;
     @Resource private AppSearchService appSearchService;
@@ -138,6 +132,23 @@ public class AppController {
         return ResultUtils.success(appService.undeployApp(body.getAppId(), userService.getLoginUser(request)));
     }
 
+    /**
+     * 下载应用代码
+     *
+     * @param appId    应用ID
+     * @param request  请求
+     * @param response 响应
+     */
+    @GetMapping("/download/{appId}")
+    public void downloadAppCode(@PathVariable Long appId,
+                                HttpServletRequest request,
+                                HttpServletResponse response) throws IOException {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID无效");
+        projectDownloadService.downloadAppCode(appId, userService.getLoginUser(request),
+                HttpMethod.GET.matches(request.getMethod()), response);
+    }
+
+
 
     /**
      * 创建应用
@@ -149,28 +160,12 @@ public class AppController {
     @PostMapping("/add")
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
-        // 参数校验
-        String initPrompt = com.hjq.CodeLess.service.AppMetadataRules.text(appAddRequest.getInitPrompt(), 2000, "初始描述");
-        ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
         // 获取当前登录用户
         User loginUser = userService.getLoginUser(request);
-        // 构造入库对象
-        App app = new App();
-        BeanUtil.copyProperties(appAddRequest, app);
-        app.setUserId(loginUser.getId());
-        appMetadataService.initialize(app, appAddRequest);
-        app.setInitPrompt(initPrompt);
-        app.setAppName(appNameGeneratorService.generateName(initPrompt));
-        app.setGenerationStatus("pending");
-        app.setDeploymentStatus("offline");
-        app.setVersion(0);
-        // 暂时设置为 VUE 工程生成
-        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
-        // 插入数据库
-        boolean result = appService.save(app);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
-        return ResultUtils.success(app.getId());
+        Long appId = appService.createApp(appAddRequest, loginUser);
+        return ResultUtils.success(appId);
     }
+
 
     /**
      * 更新应用（用户只能更新自己的应用名称和封面）

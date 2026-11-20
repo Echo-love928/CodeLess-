@@ -10,9 +10,10 @@ import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { useAppStatusPolling } from '@/composables/useAppStatusPolling'
 import { reviewFeatured } from '@/api/appDiscoveryController'
 import { FEATURE_STATUS_OPTIONS, featureLabel, visibilityLabel } from '@/utils/appPrivacy'
+import type { AppWithDownloadCount } from '@/utils/appCodeDownload'
 
 const router = useRouter()
-const data = ref<API.AppVO[]>([])
+const data = ref<AppWithDownloadCount[]>([])
 useAppStatusPolling(() => data.value)
 const total = ref(0)
 const loading = ref(false)
@@ -30,6 +31,7 @@ const columns = [
   { title: '生成类型', dataIndex: 'codeGenType', width: 130 },
   { title: '生成状态', dataIndex: 'generationStatus', width: 100 },
   { title: '部署状态', key: 'deploymentStatus', width: 100 },
+  { title: '下载次数', dataIndex: 'downloadCount', width: 100, align: 'right' as const },
   { title: '优先级', dataIndex: 'priority', width: 120, className: 'priority-column' },
   { title: '创建时间', dataIndex: 'createTime', width: 180 },
   { title: '操作', key: 'action', width: 320, className: 'action-column' },
@@ -272,6 +274,9 @@ onMounted(fetchData)
             getDeploymentLabel(record)
           }}</a-tag></template
         >
+        <template v-else-if="column.dataIndex === 'downloadCount'">{{
+          record.downloadCount ?? '0'
+        }}</template>
         <template v-else-if="column.dataIndex === 'priority'"
           ><a-tag :color="record.priority === 99 ? 'gold' : 'default'"
             >{{ record.priority ?? 0 }}<span v-if="record.priority === 99"> · 精选</span></a-tag

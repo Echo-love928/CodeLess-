@@ -80,6 +80,9 @@ public class App implements Serializable {
     @Column("deployedVersion")
     private Integer deployedVersion;
 
+    @Column("downloadCount")
+    private Long downloadCount;
+
     /**
      * 部署标识
      */
