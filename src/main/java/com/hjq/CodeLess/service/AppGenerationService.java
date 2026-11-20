@@ -8,6 +8,7 @@ import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -17,11 +18,26 @@ import java.util.function.Supplier;
 public class AppGenerationService {
     private final ConcurrentHashMap<Long, Task> tasks = new ConcurrentHashMap<>();
 
+    public Flux<String> generate(Long appId, Supplier<Flux<String>> source, Consumer<String> writeStatus,
+                                 boolean continueOnDisconnect) {
+        Flux<String> generation = generate(appId, source, writeStatus);
+        if (!continueOnDisconnect) return generation;
+
+        return Flux.defer(() -> {
+            // 浏览器订阅开始时启动生成，断开后由后台订阅继续消费工具分片。
+            Flux<String> shared = generation.publish().autoConnect(2);
+            shared.subscribe(ignored -> {}, error -> {
+                // 上游已保存失败状态和对话记录。
+            });
+            return shared;
+        });
+    }
+
     public Flux<String> generate(Long appId, Supplier<Flux<String>> source, Consumer<String> writeStatus) {
         return Flux.defer(() -> {
             Task task = new Task(writeStatus);
             if (tasks.putIfAbsent(appId, task) != null) {
-                return Flux.error(new BusinessException(ErrorCode.OPERATION_ERROR, "应用正在生成中，请先停止当前生成"));
+                return Flux.error(new BusinessException(ErrorCode.OPERATION_ERROR, "应用正在生成、构建或切换版本，请稍后重试"));
             }
             return Flux.defer(() -> {
                         writeStatus.accept("generating");
@@ -36,6 +52,17 @@ public class AppGenerationService {
                         if (signal == SignalType.CANCEL) finish(appId, task, "stopped");
                     });
         });
+    }
+
+    /** 在生成流结束后继续保留应用锁，直至构建不再写入当前版本目录。 */
+    public void startVueBuild(long appId, Supplier<CompletableFuture<Boolean>> build) {
+        Task task = tasks.get(appId);
+        if (task == null) return;
+        synchronized (task) {
+            if (task.generation && !task.finished && !task.stopped && task.build == null) {
+                task.build = build.get();
+            }
+        }
     }
 
     public boolean stop(Long appId) {
@@ -54,7 +81,7 @@ public class AppGenerationService {
         Task task = new Task(ignored -> {});
         task.generation = false;
         if (tasks.putIfAbsent(appId, task) != null) {
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "应用正在生成或切换版本，请稍后重试");
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "应用正在生成、构建或切换版本，请稍后重试");
         }
         try { return action.get(); }
         finally { tasks.remove(appId, task); }
@@ -67,7 +94,11 @@ public class AppGenerationService {
             try {
                 task.writeStatus.accept(status);
             } finally {
-                tasks.remove(appId, task);
+                if (task.build == null) {
+                    tasks.remove(appId, task);
+                } else {
+                    task.build.whenComplete((result, error) -> tasks.remove(appId, task));
+                }
             }
         }
     }
@@ -78,6 +109,7 @@ public class AppGenerationService {
         private volatile boolean stopped;
         private boolean finished;
         private boolean generation = true;
+        private CompletableFuture<Boolean> build;
 
         private Task(Consumer<String> writeStatus) { this.writeStatus = writeStatus; }
     }

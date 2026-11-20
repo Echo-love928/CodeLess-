@@ -21,7 +21,8 @@ import {
 } from '@/api/appController'
 import { useLoginUserStore } from '@/stores/loginUser'
 import { renderMarkdown } from '@/utils/markdown'
-import { API_BASE_URL, PREVIEW_BASE_URL } from '@/config/urls'
+import { API_BASE_URL, getStaticPreviewUrl } from '@/config/urls'
+import { CodeGenTypeEnum } from '@/constants/codeGenType'
 import logoUrl from '@/assets/logo.png'
 import AppDetailsModal from '@/components/AppDetailsModal.vue'
 import DeploymentSuccessModal from '@/components/DeploymentSuccessModal.vue'
@@ -72,6 +73,7 @@ const messageListRef = ref<HTMLElement>()
 const isAtBottom = ref(true)
 const generationStageIndex = ref(0)
 const toolProgress = ref('')
+let writtenVueFiles = 0
 const generationStages = [
   '正在理解你的修改需求',
   '正在编写页面结构',
@@ -131,12 +133,11 @@ const canStop = computed(
     canChat.value &&
     (generating.value ? generationAccepted.value : app.value?.generationStatus === 'generating'),
 )
-const staticKey = computed(() =>
-  app.value?.codeGenType && app.value.id ? `${app.value.codeGenType}_${app.value.id}` : '',
-)
-const previewUrl = computed(() =>
-  staticKey.value ? `${PREVIEW_BASE_URL}/${staticKey.value}/?v=${previewVersion.value}` : '',
-)
+const isVueProject = computed(() => app.value?.codeGenType === CodeGenTypeEnum.VUE_PROJECT)
+const previewUrl = computed(() => {
+  const { codeGenType, id } = app.value ?? {}
+  return codeGenType && id ? `${getStaticPreviewUrl(codeGenType, id)}?v=${previewVersion.value}` : ''
+})
 const generationStage = computed(() => toolProgress.value || generationStages[generationStageIndex.value])
 
 const updateScrollPosition = () => {
@@ -154,6 +155,7 @@ const scrollToBottom = async (force = false) => {
 const startGenerationStages = () => {
   generationStageIndex.value = 0
   toolProgress.value = ''
+  writtenVueFiles = 0
   window.clearInterval(generationStageTimer)
   generationStageTimer = window.setInterval(() => {
     generationStageIndex.value = (generationStageIndex.value + 1) % generationStages.length
@@ -204,9 +206,14 @@ const decodeVueProjectChunk = (chunk: string) => {
       toolProgress.value = ''
       return typeof payload.data === 'string' ? payload.data : ''
     case 'tool_request':
-      toolProgress.value = '正在生成项目文件'
+      toolProgress.value = writtenVueFiles
+        ? `正在生成项目文件（已写入 ${writtenVueFiles} 个）`
+        : '正在生成项目文件'
       return ''
     case 'tool_executed':
+      if (typeof payload.result === 'string' && payload.result.startsWith('文件写入成功:')) {
+        writtenVueFiles++
+      }
       toolProgress.value = typeof payload.result === 'string' ? payload.result : ''
       return ''
     default:
@@ -215,19 +222,25 @@ const decodeVueProjectChunk = (chunk: string) => {
 }
 
 const checkPreview = async () => {
-  if (!staticKey.value) {
+  const url = previewUrl.value
+  if (!url) {
     previewReady.value = false
     return
   }
   try {
-    const response = await fetch(`${PREVIEW_BASE_URL}/${staticKey.value}/?v=${Date.now()}`, {
+    const response = await fetch(url, {
       credentials: 'include',
       cache: 'no-store',
     })
-    previewReady.value = response.ok
+    if (url === previewUrl.value) previewReady.value = response.ok
   } catch {
-    previewReady.value = false
+    if (url === previewUrl.value) previewReady.value = false
   }
+}
+
+const refreshPreview = async () => {
+  previewVersion.value = Date.now()
+  await checkPreview()
 }
 
 const appendSseEvent = (event: string, assistant: ChatMessage) => {
@@ -245,7 +258,7 @@ const appendSseEvent = (event: string, assistant: ChatMessage) => {
   if (eventName === 'error') throw new Error(decodeEventData(data) || '代码生成失败')
   if (data && data !== '[DONE]') {
     const chunk = decodeEventData(data)
-    const text = app.value?.codeGenType === 'vue_project' ? decodeVueProjectChunk(chunk) : chunk
+    const text = isVueProject.value ? decodeVueProjectChunk(chunk) : chunk
     if (!text) return
     assistant.content += text
     scheduleMarkdownRender(assistant)
@@ -287,8 +300,7 @@ const refreshAppStatus = async () => {
       previousStatus === 'generating' &&
       app.value.generationStatus !== 'generating'
     ) {
-      previewVersion.value = Date.now()
-      await checkPreview()
+      await refreshPreview()
     }
   } finally {
     statusRequestPending = false
@@ -372,8 +384,9 @@ const sendMessage = async (preset?: string) => {
       buffer += decoder.decode(value, { stream: !done })
       const events = buffer.split(/\r?\n\r?\n/)
       buffer = events.pop() ?? ''
+      const previousContent = assistant.content
       for (const event of events) consumeEvent(event)
-      await scrollToBottom()
+      if (assistant.content !== previousContent) await scrollToBottom()
       if (done) break
     }
     if (buffer.trim()) consumeEvent(buffer)
@@ -384,13 +397,19 @@ const sendMessage = async (preset?: string) => {
       return
     }
     if (outcome !== 'done') throw new Error('生成连接中断，请重试')
-    if (!assistant.content) assistant.content = '网站已生成完成，可以在右侧查看效果。'
+    await refreshPreview()
+    if (!assistant.content) {
+      assistant.content =
+        isVueProject.value && !previewReady.value
+          ? '网站代码已生成，构建完成后可刷新预览。'
+          : '网站已生成完成，可以在右侧查看效果。'
+    }
     scheduleMarkdownRender(assistant)
-    previewVersion.value = Date.now()
-    await checkPreview()
-    if (!previewReady.value) throw new Error('代码生成完成，但没有找到可预览的网站文件')
+    if (!previewReady.value && !isVueProject.value) {
+      throw new Error('代码生成完成，但没有找到可预览的网站文件')
+    }
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') return
+    if (disposed || (error instanceof DOMException && error.name === 'AbortError')) return
     assistant.content ||= '生成过程中连接中断，请重试。'
     scheduleMarkdownRender(assistant)
     message.error(error instanceof Error ? error.message : '生成失败，请稍后重试')
@@ -455,8 +474,7 @@ const pauseDeployment = () => {
 
 const onVersionRestored = async () => {
   await refreshAppStatus()
-  previewVersion.value = Date.now()
-  await checkPreview()
+  await refreshPreview()
 }
 
 const openEditPage = async () => {
@@ -565,7 +583,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true
   window.clearInterval(statusTimer)
-  if (generating.value && generationAccepted.value) {
+  if (!isVueProject.value && generating.value && generationAccepted.value) {
     void fetch(`${API_BASE_URL}/app/chat/stop`, {
       method: 'POST',
       credentials: 'include',
@@ -765,7 +783,7 @@ onBeforeUnmount(() => {
           :stage="generationStage"
           :stages="generationStages"
           :stage-index="generationStageIndex"
-          @refresh="previewVersion = Date.now()"
+          @refresh="refreshPreview"
         />
       </div>
     </main>

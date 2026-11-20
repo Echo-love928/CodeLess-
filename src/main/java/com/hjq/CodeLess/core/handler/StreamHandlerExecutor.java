@@ -27,12 +27,15 @@ public class StreamHandlerExecutor {
             case VUE_PROJECT -> jsonMessageStreamHandler::extractAiText;
         };
 
-        return Flux.defer(() -> {
+        Flux<String> storedStream = Flux.defer(() -> {
             StringBuilder aiResponse = new StringBuilder();
             return originFlux
                     .doOnNext(chunk -> aiResponse.append(extractAiText.apply(chunk)))
                     .doOnComplete(() -> {
                         String reply = aiResponse.toString();
+                        if (StrUtil.isBlank(reply) && codeGenType == CodeGenTypeEnum.VUE_PROJECT) {
+                            reply = "网站代码已生成，构建完成后可刷新预览。";
+                        }
                         if (StrUtil.isNotBlank(reply)) {
                             chatHistoryService.addChatMessage(appId, reply,
                                     ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId());
@@ -42,5 +45,8 @@ public class StreamHandlerExecutor {
                             "AI回复失败: " + error.getMessage(),
                             ChatHistoryMessageTypeEnum.AI.getValue(), loginUser.getId()));
         });
+        return codeGenType == CodeGenTypeEnum.VUE_PROJECT
+                ? jsonMessageStreamHandler.buildOnComplete(storedStream, appId)
+                : storedStream;
     }
 }

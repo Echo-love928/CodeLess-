@@ -3,13 +3,14 @@ import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.entity.App;
+import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import org.springframework.stereotype.Service;
 import java.nio.file.*;
 import java.io.IOException;
 import java.util.regex.Pattern;
 @Service
 public class AppResourceService {
-    private static final Pattern KEY = Pattern.compile("^(html|multi_file)_([1-9][0-9]{0,18})$");
+    private static final Pattern KEY = Pattern.compile("^(html|multi_file|vue_project)_([1-9][0-9]{0,18})$");
     private final Path root;
     public AppResourceService() { this(Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR)); }
     AppResourceService(Path root) { this.root = root.toAbsolutePath().normalize(); }
@@ -25,9 +26,16 @@ public class AppResourceService {
         for (String segment : relative.split("/")) if (segment.equals("..")) throw missing();
         String name = relative.equals("/") || relative.isEmpty() ? "index.html" : relative.replaceFirst("^/", "");
         Path base = root.resolve(key).normalize();
+        if (CodeGenTypeEnum.VUE_PROJECT.getValue().equals(app.getCodeGenType())) {
+            if (!name.startsWith("dist/")) throw missing();
+            base = base.resolve("dist");
+            name = name.substring("dist/".length());
+        }
         Path file = base.resolve(name).normalize();
         if (!file.startsWith(base) || !Files.isRegularFile(file)) throw missing();
-        if (!base.toRealPath().startsWith(root.toRealPath()) || !file.toRealPath().startsWith(base.toRealPath())) throw missing();
+        Path realBase = base.toRealPath();
+        if (!realBase.equals(root.toRealPath().resolve(root.relativize(base)))
+                || !file.toRealPath().startsWith(realBase)) throw missing();
         for (Path current = file; current != null && current.startsWith(root); current = current.getParent()) if (Files.isSymbolicLink(current)) throw missing();
         return file;
     }

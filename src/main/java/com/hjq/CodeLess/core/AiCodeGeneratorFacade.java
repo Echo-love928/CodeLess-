@@ -18,9 +18,11 @@ import com.hjq.CodeLess.service.AppVersionStorage;
 import dev.langchain4j.service.TokenStream;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import java.io.File;
+import java.time.Duration;
 
 /**
  * AI 代码生成外观类，组合生成和保存功能
@@ -28,6 +30,9 @@ import java.io.File;
 @Service
 @Slf4j
 public class AiCodeGeneratorFacade {
+
+    @Value("${app.generation.vue-stream-idle-timeout:120s}")
+    private Duration vueStreamIdleTimeout = Duration.ofMinutes(2);
 
     @Resource
     private AiCodeGeneratorService aiCodeGeneratorService;
@@ -121,13 +126,17 @@ public class AiCodeGeneratorFacade {
 
     /** 将 Vue 生成过程中的模型回复和工具事件转换为 JSON 消息流。 */
     private Flux<String> processTokenStream(TokenStream tokenStream) {
-        return Flux.create(sink -> {
+        return Flux.<String>create(sink -> {
             var rememberHandle = CancellableTokenStream.trackCancellation(sink);
             tokenStream.onPartialResponseWithContext((response, context) -> {
                         rememberHandle.accept(context.streamingHandle());
                         sink.next(JSONUtil.toJsonStr(new AiResponseMessage(response.text())));
                     })
-                    .onPartialThinkingWithContext((thinking, context) -> rememberHandle.accept(context.streamingHandle()))
+                    .onPartialThinkingWithContext((thinking, context) -> {
+                        rememberHandle.accept(context.streamingHandle());
+                        // 思考分片重置空闲计时，但不对浏览器输出。
+                        sink.next("");
+                    })
                     .onPartialToolCallWithContext((toolCall, context) -> {
                         rememberHandle.accept(context.streamingHandle());
                         sink.next(JSONUtil.toJsonStr(new ToolRequestMessage(toolCall)));
@@ -136,7 +145,9 @@ public class AiCodeGeneratorFacade {
                     .onCompleteResponse(response -> sink.complete())
                     .onError(sink::error)
                     .start();
-        });
+        }).timeout(vueStreamIdleTimeout, Flux.error(new BusinessException(
+                ErrorCode.OPERATION_ERROR, "Vue 生成超时，模型长时间没有输出，请重试")))
+                .filter(chunk -> !chunk.isEmpty());
     }
 
     /**

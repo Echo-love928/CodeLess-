@@ -1,11 +1,16 @@
 package com.hjq.CodeLess.ai;
 
 import com.hjq.CodeLess.service.ChatHistoryService;
+import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Redis 未命中时从数据库恢复；也适用于同一 AI Service 实例运行期间的缓存过期。 */
 public class AppChatMemoryStore implements ChatMemoryStore {
@@ -17,6 +22,31 @@ public class AppChatMemoryStore implements ChatMemoryStore {
     public AppChatMemoryStore(ChatMemoryStore redisStore, ChatHistoryService chatHistoryService) {
         this.redisStore = redisStore;
         this.chatHistoryService = chatHistoryService;
+    }
+
+    /** 新任务开始前清理没有收到完整工具结果的历史轮次。 */
+    void discardUnfinishedToolCalls(Object memoryId) {
+        List<ChatMessage> messages = redisStore.getMessages(memoryId);
+        List<ChatMessage> complete = new ArrayList<>(messages.size());
+        for (int index = 0; index < messages.size(); index++) {
+            ChatMessage message = messages.get(index);
+            if (!(message instanceof AiMessage ai) || !ai.hasToolExecutionRequests()) {
+                complete.add(message);
+                continue;
+            }
+
+            int batchStart = index;
+            Set<String> answered = new HashSet<>();
+            while (index + 1 < messages.size()
+                    && messages.get(index + 1) instanceof ToolExecutionResultMessage result) {
+                answered.add(result.id());
+                index++;
+            }
+            if (ai.toolExecutionRequests().stream().allMatch(request -> answered.contains(request.id()))) {
+                complete.addAll(messages.subList(batchStart, index + 1));
+            }
+        }
+        if (complete.size() != messages.size()) redisStore.updateMessages(memoryId, complete);
     }
 
     @Override

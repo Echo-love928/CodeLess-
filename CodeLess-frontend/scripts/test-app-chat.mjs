@@ -11,11 +11,31 @@ import { assertMarkdownExport, chatHistoryExportFileName } from '../src/utils/ch
 
 // 执行真实页面的 setup 和挂载钩子，用可控 API 与 SSE 验证初始化流程。
 const require = createRequire(import.meta.url)
+const compile = (source) =>
+  ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+
+const loadConfigModule = (path, imports = {}) => {
+  const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+  const output = compile(source.replaceAll('import.meta.env', 'env'))
+  const module = { exports: {} }
+  new Function('require', 'exports', 'env', output)(
+    (name) => imports[name] ?? require(name),
+    module.exports,
+    {
+      VITE_API_BASE_URL: 'http://api.test',
+      VITE_PREVIEW_BASE_URL: 'http://preview.test/static/',
+      VITE_DEPLOY_BASE_URL: 'http://deploy.test',
+    },
+  )
+  return module.exports
+}
+const codeGenTypes = loadConfigModule('../src/constants/codeGenType.ts')
+const urls = loadConfigModule('../src/config/urls.ts', { '@/constants/codeGenType': codeGenTypes })
 const source = readFileSync(new URL('../src/pages/app/AppChatPage.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
-const compiled = ts.transpileModule(compileScript(descriptor, { id: 'app-chat-test' }).content, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText
+const compiled = compile(compileScript(descriptor, { id: 'app-chat-test' }).content)
 const renderer = vue.createRenderer({
   createComment: () => ({}),
   createElement: () => ({}),
@@ -48,6 +68,8 @@ const mountPage = (options = {}) => {
   }
   const historyCalls = []
   const generationCalls = []
+  const stopCalls = []
+  const previewCalls = []
   const errors = []
   const exportCalls = []
   const downloads = []
@@ -93,7 +115,8 @@ const mountPage = (options = {}) => {
       }),
     },
     '@/utils/markdown': { renderMarkdown: (value) => `<p>${value}</p>` },
-    '@/config/urls': { API_BASE_URL: 'http://api.test', PREVIEW_BASE_URL: 'http://preview.test' },
+    '@/config/urls': urls,
+    '@/constants/codeGenType': codeGenTypes,
     '@/utils/appId': { useAppId: () => vue.ref(appId), isValidAppId: () => true },
     '@/utils/appStatus': { isAppOnline: () => false },
     '@/composables/useChatHistory': { useChatHistory },
@@ -110,12 +133,19 @@ const mountPage = (options = {}) => {
     return require(name)
   }
   const fetch = async (url) => {
-    if (!String(url).includes('/app/chat/gen/code')) return { ok: true }
+    if (String(url).includes('/app/chat/stop')) {
+      stopCalls.push(url)
+      return { ok: true }
+    }
+    if (!String(url).includes('/app/chat/gen/code')) {
+      previewCalls.push(new URL(url))
+      return { ok: options.previewAvailable?.() ?? true }
+    }
     generationCalls.push(new URL(url))
     return {
       ok: true,
       headers: { get: () => 'text/event-stream' },
-      body: new ReadableStream({
+      body: options.generationBody ?? new ReadableStream({
         start(controller) {
           controller.enqueue(
             new TextEncoder().encode(
@@ -150,6 +180,8 @@ const mountPage = (options = {}) => {
     state: vm.$.setupState,
     historyCalls,
     generationCalls,
+    stopCalls,
+    previewCalls,
     errors,
     appId,
     exportCalls,
@@ -167,6 +199,7 @@ test('an owned app with empty history automatically sends initPrompt without URL
     assert.equal(page.generationCalls[0].searchParams.get('message'), '创建一个咖啡馆网站')
     assert.equal(page.state.chatMessages.length, 2)
     assert.equal(page.state.previewReady, true)
+    assert.equal(page.previewCalls.at(-1).pathname, `/static/html_${page.appId}/`)
   } finally {
     page.mounted.unmount()
   }
@@ -176,6 +209,7 @@ test('Vue generation shows tool progress and appends only AI text to the reply',
   const events = [
     { type: 'tool_request', name: 'writeFile', arguments: '{' },
     { type: 'tool_executed', result: '文件写入成功: src/App.vue' },
+    { type: 'tool_request', name: 'writeFile', arguments: '{' },
     { type: 'ai_response', data: '网站已生成' },
     { type: 'ai_response', data: '。' },
   ]
@@ -192,12 +226,69 @@ test('Vue generation shows tool progress and appends only AI text to the reply',
     const progress = []
     vue.watch(() => page.state.toolProgress, (value) => progress.push(value), { flush: 'sync' })
     await page.state.sendMessage('创建 Vue 项目')
-    assert.deepEqual(progress, ['正在生成项目文件', '文件写入成功: src/App.vue', ''])
+    assert.deepEqual(progress, [
+      '正在生成项目文件',
+      '文件写入成功: src/App.vue',
+      '正在生成项目文件（已写入 1 个）',
+      '',
+    ])
     assert.equal(page.state.chatMessages.at(-1).content, '网站已生成。')
     assert.equal(page.state.previewReady, true)
+    assert.equal(new URL(page.state.previewUrl).pathname, `/static/vue_project_${page.appId}/dist/index.html`)
+    assert.equal(page.previewCalls.at(-1).href, page.state.previewUrl)
   } finally {
     page.mounted.unmount()
   }
+})
+
+test('leaving the Vue chat page disconnects the stream without requesting a stop', async () => {
+  let streamController
+  const generationBody = new ReadableStream({
+    start(controller) {
+      streamController = controller
+    },
+  })
+  const page = mountPage({ codeGenType: 'vue_project', initPrompt: '', generationBody })
+  await settle(() => !page.state.initializing)
+  const generation = page.state.sendMessage('创建 Vue 项目')
+  await settle(() => page.state.generationAccepted)
+
+  page.mounted.unmount()
+  streamController.close()
+  await generation
+
+  assert.deepEqual(page.stopCalls, [])
+  assert.deepEqual(page.errors, [])
+})
+
+test('refresh checks for the Vue build again after the generation stream completes', async () => {
+  let built = false
+  const page = mountPage({
+    codeGenType: 'vue_project',
+    previewAvailable: () => built,
+    stream: 'event: done\n\n',
+  })
+  try {
+    await settle(() => !page.state.initializing && !page.state.generating)
+    assert.equal(page.state.previewReady, false)
+    assert.deepEqual(page.errors, [])
+    assert.match(page.state.chatMessages.at(-1).content, /构建完成后可刷新预览/)
+
+    built = true
+    await page.state.refreshPreview()
+    assert.equal(page.state.previewReady, true)
+    assert.equal(page.previewCalls.at(-1).href, page.state.previewUrl)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('the type options and preview helper include Vue without changing multi-file URLs', () => {
+  assert.equal(codeGenTypes.getCodeGenTypeLabel('vue_project'), 'Vue 项目模式')
+  assert.equal(
+    urls.getStaticPreviewUrl('multi_file', '1990000000000000001'),
+    'http://preview.test/static/multi_file_1990000000000000001/',
+  )
 })
 
 const exportHistory = {

@@ -1,3 +1,5 @@
+import { CodeGenTypeEnum } from '@/constants/codeGenType'
+
 /**
  * 三种地址可独立部署：业务 API、生成预览、已部署网站。
  * Vite 环境变量在构建时注入，修改后需要重新启动开发服务或重新构建。
@@ -30,3 +32,8 @@ export const DEPLOY_BASE_URL = readBaseUrl(
 
 export const getDeployUrl = (deployKey: string): string =>
   `${DEPLOY_BASE_URL}/${encodeURIComponent(deployKey)}/`
+
+export const getStaticPreviewUrl = (codeGenType: string, appId: string): string => {
+  const baseUrl = `${PREVIEW_BASE_URL}/${codeGenType}_${appId}/`
+  return codeGenType === CodeGenTypeEnum.VUE_PROJECT ? `${baseUrl}dist/index.html` : baseUrl
+}

@@ -6,6 +6,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
+import com.hjq.CodeLess.core.builder.VueProjectBuilder;
 import com.hjq.CodeLess.core.handler.StreamHandlerExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
@@ -79,6 +80,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     private AppDeploymentStorage appDeploymentStorage;
 
     @Resource
+    private VueProjectBuilder vueProjectBuilder;
+
+    @Resource
     private AppVersionService appVersionService;
 
     @Resource
@@ -123,7 +127,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
                     .subscribeOn(Schedulers.boundedElastic());
             // Flush SSE headers after task registration so stop is available before the first model token.
             return Flux.just("").concatWith(handledStream).concatWith(coverTask);
-        }, status -> updateGenerationStatus(appId, status));
+        }, status -> updateGenerationStatus(appId, status), codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT);
     }
 
     private synchronized void updateGenerationStatus(Long appId, String status) {
@@ -181,7 +185,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     }
 
     @Override
-    public synchronized String deployApp(Long appId, User loginUser) {
+    public String deployApp(Long appId, User loginUser) {
         App app = getOwnedApp(appId, loginUser);
         ThrowUtils.throwIf("generating".equals(app.getGenerationStatus()), ErrorCode.OPERATION_ERROR, "请先等待生成完成或停止生成");
         return appGenerationService.withIdleApp(appId, () -> deployCurrentVersion(appId, loginUser));
@@ -207,6 +211,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         if (StrUtil.isBlank(deployKey)) {
             deployKey = RandomUtil.randomString(6);
         }
+        String codeGenType = app.getCodeGenType();
+        if (CodeGenTypeEnum.VUE_PROJECT.getValue().equals(codeGenType)) {
+            var project = appDeploymentStorage.requireSourceProject(codeGenType, appId);
+            boolean built = vueProjectBuilder.buildProject(project.toString());
+            ThrowUtils.throwIf(!built, ErrorCode.SYSTEM_ERROR, "Vue 项目构建失败，请检查代码和依赖");
+        }
         // 8. 更新应用的 deployKey 和部署时间
         App updateApp = new App();
         updateApp.setId(appId);
@@ -214,7 +224,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         updateApp.setDeploymentStatus("online");
         updateApp.setDeployedVersion(app.getVersion());
         updateApp.setDeployedTime(LocalDateTime.now());
-        appDeploymentStorage.publish(app.getCodeGenType(), appId, deployKey, () ->
+        appDeploymentStorage.publish(codeGenType, appId, deployKey, () ->
                 ThrowUtils.throwIf(!this.updateById(updateApp), ErrorCode.OPERATION_ERROR, "更新应用部署信息失败"));
         // 9. 返回可访问的 URL
         return String.format("%s/%s/", StrUtil.removeSuffix(deployBaseUrl.trim(), "/"), deployKey);

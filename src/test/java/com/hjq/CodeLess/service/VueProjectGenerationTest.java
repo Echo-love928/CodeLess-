@@ -1,8 +1,10 @@
 package com.hjq.CodeLess.service;
 
 import cn.hutool.json.JSONUtil;
+import com.hjq.CodeLess.ai.AiCodeGeneratorService;
 import com.hjq.CodeLess.ai.AiCodeGeneratorServiceFactory;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
+import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.mapper.AppVersionRepository;
 import com.hjq.CodeLess.model.entity.App;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
@@ -20,8 +22,12 @@ import dev.langchain4j.model.chat.response.PartialToolCall;
 import dev.langchain4j.model.chat.response.PartialToolCallContext;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.chat.response.StreamingHandle;
+import dev.langchain4j.model.output.FinishReason;
+import dev.langchain4j.service.TokenStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
@@ -33,9 +39,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -43,12 +51,55 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.RETURNS_SELF;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VueProjectGenerationTest {
     @Test
-    void generatesVueProjectThroughFileToolsAndSavesVersion(@TempDir Path tempDir) throws Exception {
+    void stalledVueToolStreamCancelsModelBeforeSavingVersion(@TempDir Path tempDir) {
+        long appId = 1L;
+        var type = CodeGenTypeEnum.VUE_PROJECT;
+        var facade = new AiCodeGeneratorFacade();
+        var factory = mock(AiCodeGeneratorServiceFactory.class);
+        var versions = mock(AppVersionService.class);
+        var service = mock(AiCodeGeneratorService.class);
+        var tokenStream = mock(TokenStream.class, RETURNS_SELF);
+        var handle = mock(StreamingHandle.class);
+        var callback = new AtomicReference<BiConsumer<PartialToolCall, PartialToolCallContext>>();
+        when(tokenStream.onPartialToolCallWithContext(any())).thenAnswer(invocation -> {
+            callback.set(invocation.getArgument(0));
+            return tokenStream;
+        });
+        doAnswer(invocation -> {
+            var fragment = PartialToolCall.builder().name("writeFile").partialArguments("{").build();
+            callback.get().accept(fragment, new PartialToolCallContext(handle));
+            return null;
+        }).when(tokenStream).start();
+        when(factory.createAiCodeGeneratorService(eq(appId), eq(type), any())).thenReturn(service);
+        when(versions.generationPrompt(appId, "prompt")).thenReturn("prompt");
+        when(service.generateVueProjectCodeStream(appId, "prompt")).thenReturn(tokenStream);
+        ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
+        ReflectionTestUtils.setField(facade, "appVersionService", versions);
+        ReflectionTestUtils.setField(facade, "appVersionStorage",
+                new AppVersionStorage(tempDir.resolve("output"), tempDir.resolve("versions")));
+        ReflectionTestUtils.setField(facade, "vueStreamIdleTimeout", Duration.ofMillis(150));
+
+        var error = assertThrows(BusinessException.class, () -> facade
+                .generateAndSaveCodeStream("prompt", type, appId).blockLast(Duration.ofSeconds(5)));
+
+        assertEquals("Vue 生成超时，模型长时间没有输出，请重试", error.getMessage());
+        verify(handle, timeout(2000)).cancel();
+        verify(versions).generationPrompt(appId, "prompt");
+        verifyNoMoreInteractions(versions);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void generatesVueProjectThroughFileToolsAndSavesVersion(boolean recoverTruncatedCall, @TempDir Path tempDir)
+            throws Exception {
         long appId = 1L;
         var type = CodeGenTypeEnum.VUE_PROJECT;
         String prompt = "创建一个 Vue 首页";
@@ -58,12 +109,22 @@ class VueProjectGenerationTest {
                 "package.json", "{\"name\":\"vue-test\",\"private\":true}",
                 "src/App.vue", "<template><h1>你好，Vue</h1></template>"
         );
+        var truncatedCall = ToolExecutionRequest.builder().id("truncated").name("writeFile")
+                .arguments("{\"relativeFilePath\":\"src/App.vue\",\"content\":\"unfinished").build();
+        var orphanedCall = ToolExecutionRequest.builder().id("previous-attempt").name("writeFile")
+                .arguments(truncatedCall.arguments()).build();
+        int toolRound = recoverTruncatedCall ? 2 : 1;
         List<ChatRequest> modelRequests = new ArrayList<>();
         var model = new StreamingChatModel() {
             @Override
             public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
                 modelRequests.add(request);
-                if (modelRequests.size() == 1) {
+                if (recoverTruncatedCall && modelRequests.size() == 1) {
+                    handler.onCompleteResponse(ChatResponse.builder().finishReason(FinishReason.LENGTH)
+                            .aiMessage(AiMessage.from(List.of(truncatedCall))).build());
+                    return;
+                }
+                if (modelRequests.size() == toolRound) {
                     var tools = expectedFiles.entrySet().stream()
                             .map(file -> ToolExecutionRequest.builder()
                                     .id(file.getKey())
@@ -88,7 +149,8 @@ class VueProjectGenerationTest {
         };
 
         var redis = mock(RedisChatMemoryStore.class);
-        var memory = new AtomicReference<List<ChatMessage>>(List.of());
+        List<ChatMessage> previousAttempt = recoverTruncatedCall ? List.of(AiMessage.from(List.of(orphanedCall))) : List.of();
+        var memory = new AtomicReference<>(previousAttempt);
         when(redis.getMessages(appId)).thenAnswer(call -> new ArrayList<>(memory.get()));
         doAnswer(call -> {
             memory.set(List.copyOf(call.<List<ChatMessage>>getArgument(1)));
@@ -117,6 +179,19 @@ class VueProjectGenerationTest {
                 .collectList().block(Duration.ofSeconds(5));
 
         var events = messages.stream().map(JSONUtil::parseObj).toList();
+        if (recoverTruncatedCall) {
+            assertTrue(modelRequests.getFirst().messages().stream().noneMatch(
+                    message -> message instanceof AiMessage ai && ai.toolExecutionRequests().contains(orphanedCall)));
+            var retryResult = modelRequests.get(1).messages().stream()
+                    .filter(ToolExecutionResultMessage.class::isInstance)
+                    .map(ToolExecutionResultMessage.class::cast)
+                    .filter(result -> result.id().equals(truncatedCall.id()))
+                    .findFirst().orElseThrow();
+            assertTrue(retryResult.text().contains("重新调用 writeFile"));
+            assertEquals("tool_executed", events.getFirst().getStr("type"));
+            assertEquals(retryResult.text(), events.getFirst().getStr("result"));
+            events = events.subList(1, events.size());
+        }
         int toolCount = expectedFiles.size();
         assertEquals(toolCount * 2 + 1, events.size());
         var requests = events.subList(0, toolCount);
@@ -137,12 +212,13 @@ class VueProjectGenerationTest {
         var response = events.get(toolCount * 2);
         assertEquals("ai_response", response.getStr("type"));
         assertEquals(completion, response.getStr("data"));
-        assertEquals(2, modelRequests.size());
+        assertEquals(toolRound + 1, modelRequests.size());
         assertTrue(modelRequests.get(0).toolSpecifications().stream()
                 .anyMatch(tool -> tool.name().equals("writeFile")));
-        var toolResults = modelRequests.get(1).messages().stream()
+        var toolResults = modelRequests.get(toolRound).messages().stream()
                 .filter(ToolExecutionResultMessage.class::isInstance)
                 .map(ToolExecutionResultMessage.class::cast)
+                .filter(result -> !result.id().equals(truncatedCall.id()))
                 .map(ToolExecutionResultMessage::text)
                 .sorted()
                 .toList();

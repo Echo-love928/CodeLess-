@@ -4,6 +4,7 @@ import cn.hutool.core.io.FileUtil;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
+import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import org.springframework.stereotype.Service;
 import lombok.extern.slf4j.Slf4j;
 
@@ -34,13 +35,25 @@ public class AppDeploymentStorage {
         publish(codeGenType, appId, deployKey, () -> {});
     }
 
-    public void publish(String codeGenType, Long appId, String deployKey, Runnable persist) {
+    public Path requireSourceProject(String codeGenType, Long appId) {
         if (appId == null || appId <= 0 || codeGenType == null || !codeGenType.matches("[a-z_]+")) {
             throw new IllegalArgumentException("应用目录无效");
         }
         Path source = outputRoot.resolve(codeGenType + "_" + appId);
-        if (!Files.isRegularFile(source.resolve("index.html"))) {
+        if (!Files.isRegularFile(source.resolve("index.html"))
+                || (CodeGenTypeEnum.VUE_PROJECT.getValue().equals(codeGenType) && Files.isSymbolicLink(source))) {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "应用代码不存在，请先完成生成");
+        }
+        return source;
+    }
+
+    public void publish(String codeGenType, Long appId, String deployKey, Runnable persist) {
+        Path project = requireSourceProject(codeGenType, appId);
+        boolean vue = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(codeGenType);
+        Path source = vue ? project.resolve("dist") : project;
+        if (vue && (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isRegularFile(source.resolve("index.html"), LinkOption.NOFOLLOW_LINKS))) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Vue 项目构建完成但缺少 dist/index.html");
         }
         Path target = deploymentPath(deployKey);
         Path staging = workPath("staging-");
@@ -49,6 +62,13 @@ public class AppDeploymentStorage {
             Files.createDirectories(deployRoot);
             Files.createDirectories(workRoot);
             Files.createDirectory(staging);
+            if (vue) {
+                try (var artifacts = Files.walk(source)) {
+                    if (artifacts.anyMatch(Files::isSymbolicLink)) {
+                        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Vue 构建产物不能包含符号链接");
+                    }
+                }
+            }
             FileUtil.copyContent(source.toFile(), staging.toFile(), true);
             if (Files.exists(target)) Files.move(target, backup);
             try {
