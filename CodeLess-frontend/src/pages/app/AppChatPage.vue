@@ -216,7 +216,7 @@ const decodeEventData = (raw: string) => {
 }
 
 const decodeVueProjectChunk = (chunk: string) => {
-  let payload: { type?: string; data?: unknown; result?: unknown } | null
+  let payload: { type?: string; data?: unknown; result?: unknown; display?: unknown } | null
   try {
     payload = JSON.parse(chunk)
   } catch {
@@ -227,13 +227,20 @@ const decodeVueProjectChunk = (chunk: string) => {
       toolProgress.value = ''
       return typeof payload.data === 'string' ? payload.data : ''
     case 'tool_request':
-      toolProgress.value = writtenVueFiles
-        ? `正在生成项目文件（已写入 ${writtenVueFiles} 个）`
-        : '正在生成项目文件'
+      toolProgress.value =
+        typeof payload.display === 'string'
+          ? payload.display.trim()
+          : writtenVueFiles
+            ? `正在生成项目文件（已写入 ${writtenVueFiles} 个）`
+            : '正在生成项目文件'
       return ''
     case 'tool_executed':
       if (typeof payload.result === 'string' && payload.result.startsWith('文件写入成功:')) {
         writtenVueFiles++
+      }
+      if (typeof payload.display === 'string') {
+        toolProgress.value = payload.display.trim().split('\n', 1)[0] || '工具调用完成'
+        return payload.display
       }
       toolProgress.value = typeof payload.result === 'string' ? payload.result : ''
       return ''

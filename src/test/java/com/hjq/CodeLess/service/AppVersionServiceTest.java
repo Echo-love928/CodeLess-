@@ -76,6 +76,20 @@ class AppVersionServiceTest {
         assertTrue(prompt.contains("change header"));
     }
 
+    @Test void vueGenerationSeedsTheSelectedVersionAndLetsToolsReadIt() {
+        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
+        app.setVersion(2);
+        Path workspace = Path.of("workspace");
+
+        String prompt = service.generationPrompt(1L, "change header", workspace);
+
+        verify(storage).seedVueProjectWorkspace(1L, 2, workspace);
+        verify(storage, never()).readFiles(anyLong(), anyString(), anyInt());
+        assertTrue(prompt.contains("V2"));
+        assertTrue(prompt.contains("readDir"));
+        assertTrue(prompt.contains("change header"));
+    }
+
     @Test void failedCommitRestoresPreviewAndRemovesUncommittedSnapshot() {
         doThrow(new IllegalStateException("commit failed")).when(manager).commit(any());
         assertThrows(IllegalStateException.class,

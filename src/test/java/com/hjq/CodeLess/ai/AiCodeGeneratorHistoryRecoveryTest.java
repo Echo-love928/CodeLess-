@@ -57,6 +57,7 @@ class AiCodeGeneratorHistoryRecoveryTest {
         context.registerBean("reasoningStreamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
         context.registerBean("redisChatMemoryStore", RedisChatMemoryStore.class, () -> store);
         context.getBeanFactory().registerSingleton("chatHistoryService", history);
+        context.scan("com.hjq.CodeLess.ai.tools");
         context.register(AiCodeGeneratorServiceFactory.class);
         context.refresh();
         return context;

@@ -360,11 +360,14 @@ test('sends the focused iframe element in the SSE request and exits visual editi
   }
 })
 
-test('Vue generation shows tool progress and appends only AI text to the reply', async () => {
+test('Vue generation shows tool progress and includes formatted results in the reply', async () => {
+  const detail = '\n\n[工具调用] 修改文件 src/App.vue\n\n替换后：2026\n\n'
   const events = [
     { type: 'tool_request', name: 'writeFile', arguments: '{' },
     { type: 'tool_executed', result: '文件写入成功: src/App.vue' },
     { type: 'tool_request', name: 'writeFile', arguments: '{' },
+    { type: 'tool_request', name: 'modifyFile', display: '\n\n[选择工具] 修改文件\n\n' },
+    { type: 'tool_executed', result: '文件修改成功: src/App.vue', display: detail },
     { type: 'ai_response', data: '网站已生成' },
     { type: 'ai_response', data: '。' },
   ]
@@ -385,9 +388,11 @@ test('Vue generation shows tool progress and appends only AI text to the reply',
       '正在生成项目文件',
       '文件写入成功: src/App.vue',
       '正在生成项目文件（已写入 1 个）',
+      '[选择工具] 修改文件',
+      '[工具调用] 修改文件 src/App.vue',
       '',
     ])
-    assert.equal(page.state.chatMessages.at(-1).content, '网站已生成。')
+    assert.equal(page.state.chatMessages.at(-1).content, detail + '网站已生成。')
     assert.equal(page.state.previewReady, true)
     assert.equal(new URL(page.state.previewUrl).pathname, `/static/vue_project_${page.appId}/dist/index.html`)
     assert.equal(page.previewCalls.at(-1).href, page.state.previewUrl)

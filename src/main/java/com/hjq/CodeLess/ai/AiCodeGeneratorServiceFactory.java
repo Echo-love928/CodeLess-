@@ -1,6 +1,7 @@
 package com.hjq.CodeLess.ai;
 
-import com.hjq.CodeLess.ai.tools.FileWriteTool;
+import com.hjq.CodeLess.ai.tools.ToolManager;
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
@@ -38,13 +39,16 @@ public class AiCodeGeneratorServiceFactory {
     @Resource
     private ChatHistoryService chatHistoryService;
 
+    @Resource
+    private ToolManager toolManager;
+
     @Bean
     public AiCodeGeneratorService aiCodeGeneratorService() {
         return buildDefaultService(appChatMemoryProvider(false));
     }
 
     public AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType,
-                                                               FileWriteTool fileWriteTool) {
+                                                               VueProjectWorkspace workspace) {
         if (codeGenType == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型为空");
         }
@@ -61,11 +65,16 @@ public class AiCodeGeneratorServiceFactory {
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .streamingChatModel(reasoningStreamingChatModel)
                         .chatMemoryProvider(memoryProvider)
-                        .tools(fileWriteTool)
+                        .tools(toolManager.getAllTools(workspace))
                         .toolArgumentsErrorHandler((error, context) -> {
                             if (argumentErrors.getAndIncrement() >= MAX_VUE_TOOL_ARGUMENT_RETRIES) {
                                 throw new BusinessException(ErrorCode.OPERATION_ERROR,
-                                        "Vue 文件写入参数多次不完整或格式错误，请重试生成");
+                                        "Vue 文件工具参数多次不完整或格式错误，请重试生成");
+                            }
+                            String name = context.toolExecutionRequest().name();
+                            if (!"writeFile".equals(name)) {
+                                return ToolErrorHandlerResult.text("参数缺失或 JSON 格式错误。请重新调用 "
+                                        + name + "，传入符合工具定义的完整参数。");
                             }
                             return ToolErrorHandlerResult.text("文件未写入，参数缺失或 JSON 格式错误。"
                                     + "请重新调用 writeFile，传入完整的 relativeFilePath 和 content。"

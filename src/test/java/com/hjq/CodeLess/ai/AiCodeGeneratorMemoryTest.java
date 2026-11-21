@@ -1,6 +1,8 @@
 package com.hjq.CodeLess.ai;
 
 import com.hjq.CodeLess.ai.tools.FileWriteTool;
+import com.hjq.CodeLess.ai.tools.ToolManager;
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.ChatHistoryService;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.file.Files;
@@ -105,35 +108,68 @@ class AiCodeGeneratorMemoryTest {
 
     @Test
     void vueUsesTheReasoningModelAndExecutesFileTools(@TempDir Path project) throws Exception {
+        Files.writeString(project.resolve("obsolete.txt"), "old");
+        var batches = List.of(
+                List.of(toolRequest("unknownTool", "{}"),
+                        toolRequest("writeFile", """
+                                {"relativeFilePath":"src/App.vue","content":"<template>你好</template>"}
+                                """)),
+                List.of(toolRequest("readDir", """
+                                {"relativeDirPath":""}
+                                """),
+                        toolRequest("readFile", """
+                                {"relativeFilePath":"src/App.vue"}
+                                """)),
+                List.of(toolRequest("modifyFile", """
+                                {"relativeFilePath":"src/App.vue","oldContent":"你好","newContent":"欢迎"}
+                                """),
+                        toolRequest("deleteFile", """
+                                {"relativeFilePath":"obsolete.txt"}
+                                """))
+        );
         ReflectionTestUtils.setField(factory, "reasoningStreamingChatModel", new StreamingChatModel() {
             @Override
             public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
+                int round = requests.size();
                 requests.add(request);
-                AiMessage reply;
-                if (requests.size() == 1) {
-                    var unknown = ToolExecutionRequest.builder().id("1").name("unknownTool").arguments("{}").build();
-                    var write = ToolExecutionRequest.builder().id("2").name("writeFile")
-                            .arguments("""
-                                    {"relativeFilePath":"src/App.vue","content":"<template>你好</template>"}
-                                    """)
-                            .build();
-                    reply = AiMessage.from(List.of(unknown, write));
-                } else {
-                    reply = AiMessage.from("done");
-                }
+                var reply = round < batches.size() ? AiMessage.from(batches.get(round)) : AiMessage.from("done");
                 handler.onCompleteResponse(ChatResponse.builder().aiMessage(reply).build());
             }
         });
-        var vue = factory.createAiCodeGeneratorService(APP_A, CodeGenTypeEnum.VUE_PROJECT, new FileWriteTool(project));
-        EntryPoint.consume(vue.generateVueProjectCodeStream(APP_A, "Vue project"));
+        try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
+            var manager = context.getBean(ToolManager.class);
+            ReflectionTestUtils.setField(factory, "toolManager", manager);
+            var vue = factory.createAiCodeGeneratorService(APP_A, CodeGenTypeEnum.VUE_PROJECT, new VueProjectWorkspace(project));
+            EntryPoint.consume(vue.generateVueProjectCodeStream(APP_A, "Vue project"));
 
-        assertEquals(2, requests.size());
-        assertEquals("writeFile", requests.get(0).toolSpecifications().get(0).name());
+            Path secondProject = Files.createDirectory(project.resolve("another-project"));
+            var writer = assertInstanceOf(FileWriteTool.class,
+                    manager.getTool("writeFile", new VueProjectWorkspace(secondProject)));
+            assertEquals("文件写入成功: src/App.vue", writer.writeFile("src/App.vue", "<template>另一个工程</template>"));
+            assertEquals("<template>另一个工程</template>", Files.readString(secondProject.resolve("src/App.vue")));
+        }
+
+        assertEquals(4, requests.size());
+        assertEquals(java.util.Set.of("writeFile", "readFile", "modifyFile", "readDir", "deleteFile"),
+                requests.get(0).toolSpecifications().stream().map(spec -> spec.name())
+                        .collect(java.util.stream.Collectors.toSet()));
         assertTrue(requests.get(1).messages().stream().filter(ToolExecutionResultMessage.class::isInstance)
                 .map(ToolExecutionResultMessage.class::cast)
                 .anyMatch(message -> message.text().equals("Error: there is no tool called unknownTool")));
-        assertEquals("<template>你好</template>", Files.readString(project.resolve("src/App.vue")));
+        var readResults = requests.get(2).messages().stream()
+                .filter(ToolExecutionResultMessage.class::isInstance)
+                .map(ToolExecutionResultMessage.class::cast)
+                .collect(java.util.stream.Collectors.toMap(ToolExecutionResultMessage::id,
+                        ToolExecutionResultMessage::text));
+        assertTrue(readResults.get("readDir").contains("src/App.vue"));
+        assertEquals("<template>你好</template>", readResults.get("readFile"));
+        assertEquals("<template>欢迎</template>", Files.readString(project.resolve("src/App.vue")));
+        assertFalse(Files.exists(project.resolve("obsolete.txt")));
         assertEquals(java.util.Set.of(APP_A), storedMessages.keySet());
+    }
+
+    private ToolExecutionRequest toolRequest(String name, String arguments) {
+        return ToolExecutionRequest.builder().id(name).name(name).arguments(arguments).build();
     }
 
     @Test

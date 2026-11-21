@@ -1,67 +1,65 @@
 package com.hjq.CodeLess.ai.tools;
 
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.json.JSONObject;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+import org.springframework.context.annotation.Scope;
+import org.springframework.stereotype.Component;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 
 /**
  * 文件写入工具
  * 支持 AI 通过工具调用的方式写入文件
  */
-@Slf4j
-public class FileWriteTool {
+@Component("writeFile")
+@Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
+public class FileWriteTool extends BaseTool {
 
-    private final Path projectRoot;
-    private boolean closed;
+    private final VueProjectWorkspace workspace;
 
     public FileWriteTool(Path projectRoot) {
-        this.projectRoot = projectRoot.toAbsolutePath().normalize();
+        this(new VueProjectWorkspace(projectRoot));
     }
 
-    public synchronized boolean stopWriting() {
-        if (closed) {
-            return false;
-        }
-        closed = true;
-        return true;
+    public FileWriteTool(VueProjectWorkspace workspace) {
+        this.workspace = workspace;
+    }
+
+    public boolean stopWriting() {
+        return workspace.close();
     }
 
     @Tool("写入文件到指定路径")
-    public synchronized String writeFile(
+    public String writeFile(
             @P("文件的相对路径")
             String relativeFilePath,
             @P("要写入文件的内容")
             String content
     ) {
-        if (closed) {
-            return "文件写入失败：生成任务已结束";
-        }
-        try {
-            Path relativePath = Path.of(relativeFilePath);
-            Path path = projectRoot.resolve(relativePath).normalize();
-            if (relativePath.getRoot() != null || !path.startsWith(projectRoot) || path.equals(projectRoot)) {
-                return "文件写入失败：文件路径必须位于项目目录内";
-            }
-            for (Path current = path; current.startsWith(projectRoot); current = current.getParent()) {
-                if (Files.isSymbolicLink(current)) {
-                    return "文件写入失败：文件路径不允许包含符号链接";
-                }
-            }
-            Files.createDirectories(path.getParent());
-            Files.writeString(path, content, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, LinkOption.NOFOLLOW_LINKS);
+        return workspace.access("文件写入", relativeFilePath, false, path -> {
+            VueProjectWorkspace.saveText(path, content);
             return "文件写入成功: " + relativeFilePath;
-        } catch (IOException | InvalidPathException e) {
-            log.warn("写入 Vue 工程文件失败", e);
-            return "文件写入失败: " + relativeFilePath;
+        });
+    }
+
+        @Override
+        public String getToolName() {
+            return "writeFile";
+        }
+
+        @Override
+        public String getDisplayName() {
+            return "写入文件";
+        }
+
+        @Override
+        public String generateToolExecutedResult(JSONObject arguments) {
+            String relativeFilePath = arguments.getStr("relativeFilePath");
+            String suffix = FileUtil.getSuffix(relativeFilePath);
+            String content = arguments.getStr("content");
+            return String.format("[工具调用] %s %s\n%s", getDisplayName(), relativeFilePath, fencedCode(suffix, content));
         }
     }
-}

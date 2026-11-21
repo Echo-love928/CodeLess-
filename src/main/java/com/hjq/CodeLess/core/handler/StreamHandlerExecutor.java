@@ -11,7 +11,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.function.Function;
 
-/** 按生成类型提取并保存 AI 回复，同时转发原始流。 */
+/** 按生成类型提取并保存对话内容，同时转发原始流。 */
 @Component
 @RequiredArgsConstructor
 public class StreamHandlerExecutor {
@@ -22,15 +22,15 @@ public class StreamHandlerExecutor {
     public Flux<String> doExecute(Flux<String> originFlux,
                                   ChatHistoryService chatHistoryService,
                                   long appId, User loginUser, CodeGenTypeEnum codeGenType) {
-        Function<String, String> extractAiText = switch (codeGenType) {
+        Function<String, String> extractChatText = switch (codeGenType) {
             case HTML, MULTI_FILE -> simpleTextStreamHandler::extractAiText;
-            case VUE_PROJECT -> jsonMessageStreamHandler::extractAiText;
+            case VUE_PROJECT -> jsonMessageStreamHandler::extractChatText;
         };
 
         Flux<String> storedStream = Flux.defer(() -> {
             StringBuilder aiResponse = new StringBuilder();
             return originFlux
-                    .doOnNext(chunk -> aiResponse.append(extractAiText.apply(chunk)))
+                    .doOnNext(chunk -> aiResponse.append(extractChatText.apply(chunk)))
                     .doOnComplete(() -> {
                         String reply = aiResponse.toString();
                         if (StrUtil.isBlank(reply) && codeGenType == CodeGenTypeEnum.VUE_PROJECT) {

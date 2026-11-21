@@ -3,7 +3,11 @@ package com.hjq.CodeLess.service;
 import cn.hutool.json.JSONUtil;
 import com.hjq.CodeLess.ai.AiCodeGeneratorService;
 import com.hjq.CodeLess.ai.AiCodeGeneratorServiceFactory;
+import com.hjq.CodeLess.ai.tools.ToolManager;
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
+import com.hjq.CodeLess.core.builder.VueProjectBuilder;
+import com.hjq.CodeLess.core.handler.JsonMessageStreamHandler;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.mapper.AppVersionRepository;
 import com.hjq.CodeLess.model.entity.App;
@@ -28,10 +32,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
+import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -79,10 +86,12 @@ class VueProjectGenerationTest {
             return null;
         }).when(tokenStream).start();
         when(factory.createAiCodeGeneratorService(eq(appId), eq(type), any())).thenReturn(service);
-        when(versions.generationPrompt(appId, "prompt")).thenReturn("prompt");
+        when(versions.generationPrompt(eq(appId), eq("prompt"), any(Path.class))).thenReturn("prompt");
         when(service.generateVueProjectCodeStream(appId, "prompt")).thenReturn(tokenStream);
         ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
         ReflectionTestUtils.setField(facade, "appVersionService", versions);
+        ReflectionTestUtils.setField(facade, "jsonMessageStreamHandler",
+                new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(), mock(ToolManager.class)));
         ReflectionTestUtils.setField(facade, "appVersionStorage",
                 new AppVersionStorage(tempDir.resolve("output"), tempDir.resolve("versions")));
         ReflectionTestUtils.setField(facade, "vueStreamIdleTimeout", Duration.ofMillis(150));
@@ -92,7 +101,7 @@ class VueProjectGenerationTest {
 
         assertEquals("Vue 生成超时，模型长时间没有输出，请重试", error.getMessage());
         verify(handle, timeout(2000)).cancel();
-        verify(versions).generationPrompt(appId, "prompt");
+        verify(versions).generationPrompt(eq(appId), eq("prompt"), any(Path.class));
         verifyNoMoreInteractions(versions);
     }
 
@@ -138,6 +147,8 @@ class VueProjectGenerationTest {
                         var tool = tools.get(index);
                         handler.onPartialToolCall(PartialToolCall.builder()
                                 .index(index).id(tool.id()).name(tool.name()).partialArguments("{").build(), toolContext);
+                        handler.onPartialToolCall(PartialToolCall.builder()
+                                .index(index).id(tool.id()).name(tool.name()).partialArguments("\"").build(), toolContext);
                     }
                     handler.onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.from(tools)).build());
                     return;
@@ -175,8 +186,15 @@ class VueProjectGenerationTest {
         ReflectionTestUtils.setField(facade, "appVersionService", versions);
         ReflectionTestUtils.setField(facade, "appVersionStorage", storage);
 
-        var messages = facade.generateAndSaveCodeStream(prompt, type, appId)
-                .collectList().block(Duration.ofSeconds(5));
+        List<String> messages;
+        try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
+            var toolManager = context.getBean(ToolManager.class);
+            ReflectionTestUtils.setField(factory, "toolManager", toolManager);
+            ReflectionTestUtils.setField(facade, "jsonMessageStreamHandler",
+                    new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(), toolManager));
+            messages = facade.generateAndSaveCodeStream(prompt, type, appId)
+                    .collectList().block(Duration.ofSeconds(5));
+        }
 
         var events = messages.stream().map(JSONUtil::parseObj).toList();
         if (recoverTruncatedCall) {
@@ -201,6 +219,7 @@ class VueProjectGenerationTest {
             assertEquals("tool_request", event.getStr("type"));
             assertEquals("writeFile", event.getStr("name"));
             assertEquals("{", event.getStr("arguments"));
+            assertEquals("[选择工具] 写入文件", event.getStr("display").strip());
         }
         for (var event : events.subList(toolCount, toolCount * 2)) {
             assertEquals("tool_executed", event.getStr("type"));
@@ -208,6 +227,8 @@ class VueProjectGenerationTest {
             assertEquals("文件写入成功: " + event.getStr("id"), event.getStr("result"));
             var arguments = JSONUtil.parseObj(event.getStr("arguments"));
             assertEquals(expectedFiles.get(event.getStr("id")), arguments.getStr("content"));
+            assertTrue(event.getStr("display").contains("[工具调用] 写入文件 " + event.getStr("id")));
+            assertTrue(event.getStr("display").contains(arguments.getStr("content")));
         }
         var response = events.get(toolCount * 2);
         assertEquals("ai_response", response.getStr("type"));
@@ -230,5 +251,38 @@ class VueProjectGenerationTest {
         }
         verify(repository).insert(appId, 1, null, prompt, "generated");
         verify(repository).setCurrent(appId, 1, false);
+    }
+
+    @Test
+    void formatsToolResultsWithoutBreakingTheStreamOrOverflowingChatHistory(@TempDir Path tempDir) {
+        try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
+            var handler = new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(),
+                    context.getBean(ToolManager.class));
+            String fencedSource = "```md\n示例\n```";
+            var chunks = Flux.just(
+                    executedTool("missingTool", "{}", "unknown"),
+                    executedTool("writeFile", "{", "参数缺失"),
+                    executedTool("writeFile", "{}", "文件写入失败：路径无效"),
+                    executedTool("writeFile", JSONUtil.toJsonStr(Map.of(
+                            "relativeFilePath", "example.md", "content", fencedSource)), "文件写入成功: example.md"),
+                    executedTool("writeFile", JSONUtil.toJsonStr(Map.of(
+                            "relativeFilePath", "large.vue", "content", "中".repeat(24000))), "文件写入成功: large.vue"),
+                    "{\"type\":\"ai_response\",\"data\":\"完成\"}"
+            );
+            var events = handler.formatToolEvents(chunks, new VueProjectWorkspace(tempDir)).map(JSONUtil::parseObj)
+                    .collectList().block(Duration.ofSeconds(5));
+            assertEquals(6, events.size());
+            assertTrue(events.get(0).getStr("display").contains("未知工具"));
+            assertTrue(events.get(1).getStr("display").contains("参数格式无效"));
+            assertTrue(events.get(2).getStr("display").contains("未完成"));
+            assertTrue(events.get(3).getStr("display").contains("````md\n" + fencedSource + "\n````"));
+            assertTrue(events.get(4).getStr("display").contains("详情已省略"));
+            assertTrue(events.get(4).getStr("display").getBytes(StandardCharsets.UTF_8).length < 256);
+            assertEquals("完成", events.get(5).getStr("data"));
+        }
+    }
+
+    private String executedTool(String name, String arguments, String result) {
+        return JSONUtil.toJsonStr(Map.of("type", "tool_executed", "name", name, "arguments", arguments, "result", result));
     }
 }

@@ -16,6 +16,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -55,12 +56,19 @@ public class AppVersionStorage {
         }
     }
 
+    void seedVueProjectWorkspace(Long appId, int version, Path workspace) {
+        copy(versionPath(appId, CodeGenTypeEnum.VUE_PROJECT.getValue(), version),
+                workspace, Set.of("node_modules", "dist", ".git"));
+    }
+
     public boolean hasPreview(Long appId, String type) {
         return Files.isRegularFile(outputRoot.resolve(key(appId, type)).resolve("index.html"));
     }
 
     public Path captureExisting(Long appId, String type, int version) {
-        return snapshot(appId, type, version, stage -> copy(outputRoot.resolve(key(appId, type)), stage));
+        var excluded = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(type)
+                ? Set.of("node_modules", ".git") : Set.<String>of();
+        return snapshot(appId, type, version, stage -> copy(outputRoot.resolve(key(appId, type)), stage, excluded));
     }
 
     private Path snapshot(Long appId, String type, int version, Consumer<Path> writer) {
@@ -185,15 +193,25 @@ public class AppVersionStorage {
     }
 
     private void copy(Path source, Path target) {
+        copy(source, target, Set.of());
+    }
+
+    private void copy(Path source, Path target, Set<String> excludedRootEntries) {
         rejectSymlinks(source);
         try {
             Files.walkFileTree(source, new SimpleFileVisitor<>() {
                 @Override public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attrs) throws IOException {
-                    Files.createDirectories(target.resolve(source.relativize(directory))); return FileVisitResult.CONTINUE;
+                    Path relative = source.relativize(directory);
+                    if (excludedRootEntries.contains(relative.toString())) return FileVisitResult.SKIP_SUBTREE;
+                    Files.createDirectories(target.resolve(relative));
+                    return FileVisitResult.CONTINUE;
                 }
                 @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    Path relative = source.relativize(file);
+                    if (excludedRootEntries.contains(relative.toString())) return FileVisitResult.CONTINUE;
                     if (attrs.isSymbolicLink()) throw error("应用代码不允许包含符号链接");
-                    Files.copy(file, target.resolve(source.relativize(file))); return FileVisitResult.CONTINUE;
+                    Files.copy(file, target.resolve(relative));
+                    return FileVisitResult.CONTINUE;
                 }
             });
         } catch (IOException exception) { throw error("复制版本代码失败"); }

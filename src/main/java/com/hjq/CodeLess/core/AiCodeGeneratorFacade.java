@@ -8,7 +8,8 @@ import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
 import com.hjq.CodeLess.ai.model.message.AiResponseMessage;
 import com.hjq.CodeLess.ai.model.message.ToolExecutedMessage;
 import com.hjq.CodeLess.ai.model.message.ToolRequestMessage;
-import com.hjq.CodeLess.ai.tools.FileWriteTool;
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
+import com.hjq.CodeLess.core.handler.JsonMessageStreamHandler;
 import com.hjq.CodeLess.core.parser.CodeParserExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
@@ -45,6 +46,9 @@ public class AiCodeGeneratorFacade {
 
     @Resource
     private AppVersionStorage appVersionStorage;
+
+    @Resource
+    private JsonMessageStreamHandler jsonMessageStreamHandler;
 
     /**
      * 统一入口：根据类型生成并保存代码
@@ -102,23 +106,28 @@ public class AiCodeGeneratorFacade {
     private Flux<String> generateVueProjectStream(String userMessage, Long appId) {
         return Flux.defer(() -> {
             var directory = appVersionStorage.createVueProjectWorkspace();
-            var fileWriteTool = new FileWriteTool(directory);
+            var workspace = new VueProjectWorkspace(directory);
             return Flux.defer(() -> {
                 var type = CodeGenTypeEnum.VUE_PROJECT;
-                var service = aiCodeGeneratorServiceFactory.createAiCodeGeneratorService(appId, type, fileWriteTool);
-                String prompt = appVersionService.generationPrompt(appId, userMessage);
-                return processTokenStream(service.generateVueProjectCodeStream(appId, prompt))
+                String prompt;
+                synchronized (workspace) {
+                    if (workspace.isClosed()) return Flux.empty();
+                    prompt = appVersionService.generationPrompt(appId, userMessage, directory);
+                }
+                var service = aiCodeGeneratorServiceFactory.createAiCodeGeneratorService(appId, type, workspace);
+                return jsonMessageStreamHandler.formatToolEvents(
+                                processTokenStream(service.generateVueProjectCodeStream(appId, prompt)), workspace)
                         .concatWith(Flux.defer(() -> {
                             // 取消时的清理必须等正在提交的版本读取完临时文件。
-                            synchronized (fileWriteTool) {
-                                if (fileWriteTool.stopWriting()) {
+                            synchronized (workspace) {
+                                if (workspace.close()) {
                                     appVersionService.saveGeneratedCode(directory, type, appId, userMessage);
                                 }
                             }
                             return Flux.empty();
                         }));
             }).doFinally(signal -> {
-                fileWriteTool.stopWriting();
+                workspace.close();
                 appVersionStorage.discard(directory);
             });
         });

@@ -1,7 +1,12 @@
 package com.hjq.CodeLess.service;
 
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
+import com.hjq.CodeLess.ai.tools.FileDeleteTool;
+import com.hjq.CodeLess.ai.tools.FileDirReadTool;
+import com.hjq.CodeLess.ai.tools.FileModifyTool;
+import com.hjq.CodeLess.ai.tools.FileReadTool;
 import com.hjq.CodeLess.ai.tools.FileWriteTool;
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,6 +54,59 @@ class AppVersionStorageTest {
         storage.discard(workspace);
 
         assertEquals("<template>你好</template>", storage.readFiles(1L, "vue_project", 1).get("src/App.vue"));
+    }
+
+    @Test
+    void vueToolsEditACopyOfTheCurrentVersion() throws Exception {
+        var storage = new AppVersionStorage(temp.resolve("output"), temp.resolve("versions"));
+        var type = CodeGenTypeEnum.VUE_PROJECT;
+        var original = Files.createDirectories(temp.resolve("output/vue_project_1"));
+        var originalWriter = new FileWriteTool(original);
+        originalWriter.writeFile("index.html", "<div id=\"app\"></div>");
+        originalWriter.writeFile("package.json", "{}");
+        originalWriter.writeFile("src/App.vue", "<footer>2025</footer>");
+        originalWriter.writeFile("src/Keep.vue", "保留内容");
+        originalWriter.writeFile("src/Old.vue", "待删除");
+        originalWriter.writeFile("dist/compiled.js", "stale build");
+        originalWriter.writeFile("node_modules/example/package.json", "{}");
+        var snapshot = storage.captureExisting(1L, type.getValue(), 1);
+        assertFalse(Files.exists(snapshot.resolve("node_modules")));
+        assertTrue(Files.exists(snapshot.resolve("dist/compiled.js")));
+
+        var editPath = storage.createVueProjectWorkspace();
+        storage.seedVueProjectWorkspace(1L, 1, editPath);
+        var workspace = new VueProjectWorkspace(editPath);
+        var read = new FileReadTool(workspace);
+        var list = new FileDirReadTool(workspace);
+        var modify = new FileModifyTool(workspace);
+        var delete = new FileDeleteTool(workspace);
+        var outside = Files.writeString(editPath.getParent().resolve("outside.txt"), "不可访问");
+
+        assertFalse(Files.exists(editPath.resolve("dist")));
+        assertEquals("项目目录结构:\nindex.html\npackage.json\nsrc/\nsrc/App.vue\nsrc/Keep.vue\nsrc/Old.vue",
+                list.readDir(""));
+        assertEquals("<footer>2025</footer>", read.readFile("src/App.vue"));
+        assertTrue(read.readFile("../outside.txt").contains("路径必须位于项目目录内"));
+        assertTrue(list.readDir(editPath.getParent().toString()).contains("路径必须位于项目目录内"));
+        assertTrue(modify.modifyFile(outside.toString(), "不可访问", "改动").contains("路径必须位于项目目录内"));
+        assertTrue(delete.deleteFile("../outside.txt").contains("路径必须位于项目目录内"));
+        assertTrue(delete.deleteFile("package.json").contains("不允许删除"));
+        assertEquals("不可访问", Files.readString(outside));
+
+        assertEquals("文件修改成功: src/App.vue", modify.modifyFile("src/App.vue", "2025", "2026"));
+        assertEquals("文件删除成功: src/Old.vue", delete.deleteFile("src/Old.vue"));
+        workspace.close();
+        assertTrue(modify.modifyFile("src/App.vue", "2026", "2030").contains("生成任务已结束"));
+        assertTrue(delete.deleteFile("src/Keep.vue").contains("生成任务已结束"));
+        storage.saveGenerated(1L, type, 2, editPath);
+
+        var previous = storage.readFiles(1L, type.getValue(), 1);
+        assertEquals("<footer>2025</footer>", previous.get("src/App.vue"));
+        assertTrue(previous.containsKey("src/Old.vue"));
+        var edited = storage.readFiles(1L, type.getValue(), 2);
+        assertEquals("<footer>2026</footer>", edited.get("src/App.vue"));
+        assertEquals("保留内容", edited.get("src/Keep.vue"));
+        assertFalse(edited.containsKey("src/Old.vue"));
     }
 
     @Test

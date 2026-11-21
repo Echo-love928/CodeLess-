@@ -51,10 +51,20 @@ public class AppVersionService {
 
     /** Continue from the selected working version, including after a restore. */
     public String generationPrompt(Long appId, String request) {
+        return generationPrompt(appId, request, null);
+    }
+
+    public String generationPrompt(Long appId, String request, Path vueWorkspace) {
         return change(change -> {
             App app = requireApp(appId, true);
             baseline(app, change);
             if (app.getVersion() == 0) return request;
+            if (vueWorkspace != null) {
+                storage.seedVueProjectWorkspace(appId, app.getVersion(), vueWorkspace);
+                return "当前工作版本为 V" + app.getVersion() + "，源码已复制到临时工作区。"
+                        + "先用 readDir 和 readFile 查看相关文件，再按本次需求修改，保留其余内容。"
+                        + "\n\n本次需求：\n" + request;
+            }
             var files = storage.readFiles(appId, app.getCodeGenType(), app.getVersion());
             String outputInstruction = CodeGenTypeEnum.VUE_PROJECT.getValue().equals(app.getCodeGenType())
                     ? "，并使用文件写入工具写入完整工程。\n" : "，并输出完整代码。\n";

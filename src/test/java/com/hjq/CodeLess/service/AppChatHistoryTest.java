@@ -1,5 +1,6 @@
 package com.hjq.CodeLess.service;
 
+import com.hjq.CodeLess.ai.tools.ToolManager;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
 import com.hjq.CodeLess.core.builder.VueProjectBuilder;
@@ -45,7 +46,8 @@ class AppChatHistoryTest {
         ReflectionTestUtils.setField(service, "chatHistoryService", history);
         ReflectionTestUtils.setField(service, "aiCodeGeneratorFacade", generator);
         ReflectionTestUtils.setField(service, "streamHandlerExecutor",
-                new StreamHandlerExecutor(new SimpleTextStreamHandler(), new JsonMessageStreamHandler(vueBuilder, generation)));
+                new StreamHandlerExecutor(new SimpleTextStreamHandler(),
+                        new JsonMessageStreamHandler(vueBuilder, generation, mock(ToolManager.class))));
         ReflectionTestUtils.setField(service, "appCoverGeneratorService", covers);
         ReflectionTestUtils.setField(service, "appGenerationService", generation);
         doReturn(App.builder().id(1L).userId(2L).codeGenType("html").build()).when(service).getById(1L);
@@ -75,7 +77,7 @@ class AppChatHistoryTest {
     }
 
     @Test
-    void forwardsVueToolEventsAndStartsBuildAfterSavingAiText() throws Exception {
+    void forwardsVueToolEventsAndStartsBuildAfterSavingAiTextAndToolResults() throws Exception {
         doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
         when(covers.generateCover(1L, "vue_project")).thenReturn(Optional.empty());
         var completion = Sinks.<String>empty();
@@ -84,8 +86,9 @@ class AppChatHistoryTest {
         when(vueBuilder.buildProjectAsync(projectPath)).thenReturn(build);
         var events = List.of(
                 "{\"type\":\"ai_response\",\"data\":\"已生成\"}",
-                "{\"type\":\"tool_request\",\"name\":\"writeFile\"}",
-                "{\"type\":\"tool_executed\",\"result\":\"文件写入成功\"}",
+                "{\"type\":\"tool_request\",\"name\":\"writeFile\",\"display\":\"[选择工具] 写入文件\"}",
+                "{\"type\":\"tool_executed\",\"result\":\"文件写入成功\","
+                        + "\"display\":\"\\n\\n[工具调用] 写入文件 src/App.vue\\n\\n\"}",
                 "{\"type\":\"ai_response\",\"data\":\"项目。\"}"
         );
         when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.VUE_PROJECT, 1L))
@@ -105,7 +108,7 @@ class AppChatHistoryTest {
         assertEquals(events, received.subList(1, received.size()));
         var order = inOrder(history, vueBuilder);
         order.verify(history).addChatMessage(1L, "generate", "user", 2L);
-        order.verify(history).addChatMessage(1L, "已生成项目。", "ai", 2L);
+        order.verify(history).addChatMessage(1L, "已生成\n\n[工具调用] 写入文件 src/App.vue\n\n项目。", "ai", 2L);
         order.verify(vueBuilder).buildProjectAsync(projectPath);
         verifyNoMoreInteractions(history);
     }
