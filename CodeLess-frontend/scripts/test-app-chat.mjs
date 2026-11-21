@@ -16,18 +16,19 @@ const compile = (source) =>
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText
 
-const loadConfigModule = (path, imports = {}) => {
+const loadConfigModule = (path, imports = {}, window) => {
   const source = readFileSync(new URL(path, import.meta.url), 'utf8')
   const output = compile(source.replaceAll('import.meta.env', 'env'))
   const module = { exports: {} }
-  new Function('require', 'exports', 'env', output)(
+  new Function('require', 'exports', 'env', 'window', output)(
     (name) => imports[name] ?? require(name),
     module.exports,
     {
-      VITE_API_BASE_URL: 'http://api.test',
+      VITE_API_BASE_URL: '/api',
       VITE_PREVIEW_BASE_URL: 'http://preview.test/static/',
       VITE_DEPLOY_BASE_URL: 'http://deploy.test',
     },
+    window,
   )
   return module.exports
 }
@@ -68,6 +69,7 @@ const mountPage = (options = {}) => {
   }
   const historyCalls = []
   const generationCalls = []
+  const generationRequests = []
   const stopCalls = []
   const previewCalls = []
   const errors = []
@@ -151,7 +153,7 @@ const mountPage = (options = {}) => {
       return {}
     return require(name)
   }
-  const fetch = async (url) => {
+  const fetch = async (url, request) => {
     if (String(url).includes('/app/chat/stop')) {
       stopCalls.push(url)
       return { ok: true }
@@ -161,6 +163,7 @@ const mountPage = (options = {}) => {
       return { ok: options.previewAvailable?.() ?? true }
     }
     generationCalls.push(new URL(url))
+    generationRequests.push(request)
     return {
       ok: true,
       headers: { get: () => 'text/event-stream' },
@@ -176,12 +179,21 @@ const mountPage = (options = {}) => {
       }),
     }
   }
+  const listeners = new Map()
   const window = {
+    location: { origin: 'http://frontend.test', hostname: 'frontend.test' },
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: (type) => listeners.delete(type),
     setInterval: () => 1,
     clearInterval() {},
     setTimeout: () => 1,
     clearTimeout() {},
   }
+  modules['@/composables/useVisualEditor'] = loadConfigModule(
+    '../src/composables/useVisualEditor.ts',
+    { vue },
+    window,
+  )
   const module = { exports: {} }
   new Function('require', 'module', 'exports', 'window', 'fetch', compiled)(
     mockRequire,
@@ -199,6 +211,8 @@ const mountPage = (options = {}) => {
     state: vm.$.setupState,
     historyCalls,
     generationCalls,
+    generationRequests,
+    receivePreviewMessage: (event) => listeners.get('message')?.(event),
     stopCalls,
     previewCalls,
     errors,
@@ -277,10 +291,70 @@ test('an owned app with empty history automatically sends initPrompt without URL
     assert.equal(page.historyCalls.length, 1)
     assert.equal(page.historyCalls[0].pageSize, 10)
     assert.equal(page.generationCalls.length, 1)
+    assert.equal(page.generationCalls[0].origin, 'http://frontend.test')
+    assert.equal(page.generationCalls[0].pathname, '/api/app/chat/gen/code')
     assert.equal(page.generationCalls[0].searchParams.get('message'), '创建一个咖啡馆网站')
     assert.equal(page.state.chatMessages.length, 2)
     assert.equal(page.state.previewReady, true)
     assert.equal(page.previewCalls.at(-1).pathname, `/static/html_${page.appId}/`)
+  } finally {
+    page.mounted.unmount()
+  }
+})
+
+test('sends the focused iframe element in the SSE request and exits visual editing', async () => {
+  const page = mountPage({
+    history: { records: [{ id: '1', message: '已有网站', messageType: 'user' }], totalRow: 1 },
+  })
+  try {
+    await settle(() => !page.state.initializing)
+    const origin = 'http://frontend.test:8123'
+    const commands = []
+    const frame = {
+      src: origin + '/api/static/html_1/',
+      contentWindow: { postMessage: (data, target) => commands.push({ data, target }) },
+    }
+    page.state.attachPreview({ target: frame })
+    const reply = (patch, overrides = {}) =>
+      page.receivePreviewMessage({
+        source: frame.contentWindow,
+        origin,
+        data: { ...commands.at(-1).data, ...patch },
+        ...overrides,
+      })
+    assert.equal(commands.at(-1).target, origin)
+    reply({ action: 'ready' }, { origin: 'http://other.test' })
+    assert.equal(page.state.visualEditorReady, false)
+    reply({ action: 'ready' })
+    page.state.toggleEditing()
+    assert.equal(page.state.visualEditing, true)
+
+    const element = { tag: 'button', selector: '#cta', text: '立即购买' }
+    const select = { action: 'selection', element }
+    reply(select, { source: {} })
+    assert.equal(page.state.selectedElement, null)
+    reply(select)
+    assert.deepEqual(page.state.selectedElement, element)
+    const initialRevision = commands.at(-1).data.revision
+    page.state.clearSelection()
+    assert.equal(page.state.selectedElement, null)
+    assert.equal(commands.at(-1).data.editing, true)
+    reply({ ...select, revision: initialRevision })
+    assert.equal(page.state.selectedElement, null)
+    reply(select)
+
+    page.state.inputMessage = '把按钮改成绿色'
+    await page.state.sendMessage()
+    assert.equal(page.state.visualEditing, false)
+    assert.equal(page.state.selectedElement, null)
+    assert.equal(page.state.chatMessages.at(-2).content, '把按钮改成绿色')
+    assert.equal(page.generationCalls[0].search, '')
+    const request = page.generationRequests[0]
+    assert.equal(request.method, 'POST')
+    const body = JSON.parse(request.body)
+    assert.equal(body.appId, page.appId)
+    assert.match(body.message, /把按钮改成绿色/)
+    assert.ok(body.message.includes(JSON.stringify(element)))
   } finally {
     page.mounted.unmount()
   }

@@ -9,17 +9,22 @@ import { fileURLToPath } from 'node:url'
 const script = fileURLToPath(new URL('./generate-openapi.mjs', import.meta.url))
 const schemaUrl = 'http://127.0.0.1:9001/api/v3/api-docs'
 
-const runGenerator = (t, fetchBody) => {
+const runGenerator = (
+  t,
+  fetchBody,
+  env = { OPENAPI_SCHEMA_URL: schemaUrl },
+  expectedUrl = schemaUrl,
+) => {
   const cwd = mkdtempSync(join(tmpdir(), 'codeless-openapi-test-'))
   t.after(() => rmSync(cwd, { recursive: true, force: true }))
   const setup = `globalThis.fetch = async (url) => {
-    if (url !== ${JSON.stringify(schemaUrl)}) throw new Error('Unexpected schema URL: ' + url)
+    if (url !== ${JSON.stringify(expectedUrl)}) throw new Error('Unexpected schema URL: ' + url)
     ${fetchBody}
   }`
   const prelude = `data:text/javascript,${encodeURIComponent(setup)}`
   const result = spawnSync(process.execPath, ['--import', prelude, script], {
     cwd,
-    env: { ...process.env, OPENAPI_SCHEMA_URL: schemaUrl },
+    env: { ...process.env, ...env },
     encoding: 'utf8',
     timeout: 15_000,
   })
@@ -44,6 +49,17 @@ test('rejects JSON responses that are not an API document', (t) => {
   assert.equal(result.status, 1)
   assert.match(result.stderr, /未返回有效的 OpenAPI 文档/)
   assert.equal(existsSync(join(result.cwd, 'tmp', 'openapi')), false)
+})
+
+test('resolves a same-origin API path against the local backend for OpenAPI generation', (t) => {
+  const result = runGenerator(
+    t,
+    'return new Response(null, { status: 404 })',
+    { VITE_API_BASE_URL: '/api', OPENAPI_SCHEMA_URL: '' },
+    'http://localhost:8123/api/v3/api-docs',
+  )
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /http:\/\/localhost:8123\/api\/v3\/api-docs 返回 HTTP 404/)
 })
 
 test('generates into the isolated folder and keeps Snowflake IDs as strings', (t) => {

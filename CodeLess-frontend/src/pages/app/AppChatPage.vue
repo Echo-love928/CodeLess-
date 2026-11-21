@@ -10,6 +10,7 @@ import {
   StopOutlined,
   HistoryOutlined,
   DownloadOutlined,
+  EditOutlined,
 } from '@ant-design/icons-vue'
 import {
   deleteApp,
@@ -34,6 +35,7 @@ import { getDeploymentLabel, isAppOnline } from '@/utils/appStatus'
 import { visibilityLabel } from '@/utils/appPrivacy'
 import { exportAppChatHistory, listAppChatHistory } from '@/api/chatHistoryController'
 import { useChatHistory } from '@/composables/useChatHistory'
+import { useVisualEditor } from '@/composables/useVisualEditor'
 import { getAppCodeArchive, type AppWithDownloadCount } from '@/utils/appCodeDownload'
 import { downloadBlob } from '@/utils/blobDownload'
 import {
@@ -144,6 +146,19 @@ const previewUrl = computed(() => {
   const { codeGenType, id } = app.value ?? {}
   return codeGenType && id ? `${getStaticPreviewUrl(codeGenType, id)}?v=${previewVersion.value}` : ''
 })
+const visualEditAvailable = computed(
+  () => canChat.value && historyLoaded.value && previewReady.value && !isGenerating.value,
+)
+const {
+  ready: visualEditorReady,
+  editing: visualEditing,
+  selected: selectedElement,
+  attachPreview,
+  toggleEditing,
+  clearSelection,
+  stopEditing,
+  withSelection,
+} = useVisualEditor(previewUrl, visualEditAvailable)
 const generationStage = computed(() => toolProgress.value || generationStages[generationStageIndex.value])
 
 const updateScrollPosition = () => {
@@ -345,10 +360,13 @@ const sendMessage = async (preset?: string) => {
   const content = (preset ?? inputMessage.value).trim()
   if (!content || isGenerating.value || !historyLoaded.value || disposed) return
   const hasExistingWebsite = previewReady.value
-  const requestContent =
+  const prompt =
     chatMessages.value.length > 0 && hasExistingWebsite && app.value?.initPrompt
       ? `原始建站需求：${app.value.initPrompt}\n\n本次修改需求：${content}\n\n请保留未要求修改的功能，并输出修改后的完整网站代码。`
       : content
+  const hasSelection = selectedElement.value !== null
+  const requestContent = withSelection(prompt)
+  stopEditing()
   liveMessages.value.push(
     { id: `local:${nextMessageId++}`, role: 'user', content },
     { id: `local:${nextMessageId++}`, role: 'assistant', content: '', renderedContent: '' },
@@ -367,12 +385,17 @@ const sendMessage = async (preset?: string) => {
     if (result) outcome = result
   }
   try {
-    const url = new URL(`${API_BASE_URL}/app/chat/gen/code`)
-    url.searchParams.set('appId', appId.value)
-    url.searchParams.set('message', requestContent)
+    const url = new URL(`${API_BASE_URL}/app/chat/gen/code`, window.location.origin)
+    const params = { appId: appId.value, message: requestContent }
+    if (!hasSelection) url.search = new URLSearchParams(params).toString()
     const response = await fetch(url, {
+      method: hasSelection ? 'POST' : 'GET',
       credentials: 'include',
-      headers: { Accept: 'text/event-stream' },
+      headers: {
+        Accept: 'text/event-stream',
+        ...(hasSelection && { 'Content-Type': 'application/json' }),
+      },
+      body: hasSelection ? JSON.stringify(params) : undefined,
       signal: abortController.signal,
     })
     if (!response.ok || !response.body) throw new Error(`请求失败（${response.status}）`)
@@ -770,6 +793,22 @@ onBeforeUnmount(() => {
           </button>
           <a-tooltip :title="canChat ? undefined : '无法在别人的作品下对话哦~'" placement="top">
             <div :class="['composer', { 'composer--readonly': !canChat }]">
+              <a-alert
+                v-if="selectedElement"
+                class="composer__selection"
+                type="info"
+                show-icon
+                closable
+                close-text="移除"
+                @close="clearSelection"
+              >
+                <template #message>
+                  已选中 <code>{{ selectedElement.selector }}</code>
+                </template>
+                <template v-if="selectedElement.text" #description>
+                  {{ selectedElement.text }}
+                </template>
+              </a-alert>
               <a-textarea
                 v-model:value="inputMessage"
                 :auto-size="{ minRows: 3, maxRows: 7 }"
@@ -786,24 +825,44 @@ onBeforeUnmount(() => {
                     ? '无法在别人的作品下对话哦~'
                     : isGenerating
                       ? 'AI 正在生成，可随时停止'
-                      : 'Enter 发送，Shift + Enter 换行'
-                }}</span
-                ><a-button
+                      : visualEditing
+                        ? '点击预览中的元素'
+                        : 'Enter 发送，Shift + Enter 换行'
+                }}</span>
+                <a-button
                   v-if="isGenerating"
                   danger
                   :loading="stopping"
                   :disabled="!canStop"
                   @click="stopGeneration"
-                  ><template #icon><StopOutlined /></template>停止生成</a-button
-                ><a-button
-                  v-else
-                  type="primary"
-                  shape="circle"
-                  :disabled="!canChat || !historyLoaded || !inputMessage.trim()"
-                  aria-label="发送消息"
-                  @click="sendMessage()"
-                  ><template #icon><ArrowUpOutlined /></template
-                ></a-button>
+                >
+                  <template #icon><StopOutlined /></template>停止生成
+                </a-button>
+                <div v-else class="composer__actions">
+                  <a-tooltip
+                    v-if="canChat"
+                    :title="visualEditorReady ? undefined : '等待预览加载编辑器'"
+                  >
+                    <a-button
+                      type="link"
+                      :danger="visualEditing"
+                      :disabled="!visualEditAvailable || !visualEditorReady"
+                      @click="toggleEditing"
+                    >
+                      <template #icon><EditOutlined /></template>
+                      {{ visualEditing ? '退出编辑' : '编辑模式' }}
+                    </a-button>
+                  </a-tooltip>
+                  <a-button
+                    type="primary"
+                    shape="circle"
+                    :disabled="!canChat || !historyLoaded || !inputMessage.trim()"
+                    aria-label="发送消息"
+                    @click="sendMessage()"
+                  >
+                    <template #icon><ArrowUpOutlined /></template>
+                  </a-button>
+                </div>
               </div>
             </div>
           </a-tooltip>
@@ -819,6 +878,7 @@ onBeforeUnmount(() => {
           :stages="generationStages"
           :stage-index="generationStageIndex"
           @refresh="refreshPreview"
+          @preview-load="attachPreview"
         />
       </div>
     </main>
@@ -1239,6 +1299,10 @@ onBeforeUnmount(() => {
   box-shadow: none;
   resize: none;
 }
+.composer__selection {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
 .composer__footer {
   display: flex;
   margin-top: 8px;
@@ -1246,6 +1310,11 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   color: #9aa5b5;
   font-size: 11px;
+}
+.composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 @media (max-width: 900px) {
   .chat-page {

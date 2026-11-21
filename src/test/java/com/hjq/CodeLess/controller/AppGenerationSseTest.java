@@ -1,5 +1,6 @@
 package com.hjq.CodeLess.controller;
 
+import com.hjq.CodeLess.model.dto.app.AppChatRequest;
 import com.hjq.CodeLess.model.entity.User;
 import com.hjq.CodeLess.service.AppService;
 import com.hjq.CodeLess.service.UserService;
@@ -27,6 +28,16 @@ class AppGenerationSseTest {
     void completedStreamWrapsContentAndSendsDone() {
         var controller = controllerWith(Flux.just("hello"));
         var events = controller.chatToGenCode(1L, "generate", mock(HttpServletRequest.class)).collectList().block();
+        assertNotNull(events);
+        assertEquals("{\"d\":\"hello\"}", events.get(0).data());
+        assertEquals("done", events.get(1).event());
+    }
+
+    @Test
+    void generationWithARequestBodyUsesTheSameSseFlow() {
+        var controller = controllerWith(Flux.just("hello"));
+        var events = controller.chatToGenCodeWithBody(new AppChatRequest(1L, "generate"),
+                mock(HttpServletRequest.class)).collectList().block();
         assertNotNull(events);
         assertEquals("{\"d\":\"hello\"}", events.get(0).data());
         assertEquals("done", events.get(1).event());

@@ -101,6 +101,12 @@ public class AppController {
                 ));
     }
 
+    @PostMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> chatToGenCodeWithBody(@RequestBody AppChatRequest body,
+                                                               HttpServletRequest request) {
+        return chatToGenCode(body.appId(), body.message(), request);
+    }
+
     /**
      * 应用部署
      *

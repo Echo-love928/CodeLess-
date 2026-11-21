@@ -35,7 +35,8 @@ const generate = async () => {
   const env = loadEnv('development', process.cwd(), ['OPENAPI_SCHEMA_URL', 'VITE_API_BASE_URL'])
   const apiBase = env.VITE_API_BASE_URL?.trim().replace(/\/+$/, '')
   const schemaUrl =
-    env.OPENAPI_SCHEMA_URL?.trim() || (apiBase ? `${apiBase}/v3/api-docs` : config.schemaPath)
+    env.OPENAPI_SCHEMA_URL?.trim() ||
+    (apiBase ? new URL(`${apiBase}/v3/api-docs`, config.schemaPath).href : config.schemaPath)
   const schema = await loadSchema(schemaUrl)
 
   // 将已校验的文档交给生成器，避免重复请求和生成器吞掉网络错误。

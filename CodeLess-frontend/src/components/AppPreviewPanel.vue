@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { BulbOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import logoUrl from '@/assets/logo.png'
 
-defineProps<{
+const props = defineProps<{
   url: string
   ready: boolean
   generating: boolean
@@ -12,7 +13,12 @@ defineProps<{
   stages: readonly string[]
   stageIndex: number
 }>()
-const emit = defineEmits<{ refresh: [] }>()
+const emit = defineEmits<{ refresh: []; 'preview-load': [event: Event] }>()
+const sandbox = computed(() => {
+  const permissions = 'allow-scripts allow-forms allow-modals allow-popups'
+  const sameOrigin = new URL(props.url, window.location.origin).origin === window.location.origin
+  return sameOrigin ? permissions : permissions + ' allow-same-origin'
+})
 </script>
 
 <template>
@@ -29,7 +35,8 @@ const emit = defineEmits<{ refresh: [] }>()
       :key="version"
       :src="url"
       :title="`${appName || '应用'}预览`"
-      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+      :sandbox="sandbox"
+      @load="emit('preview-load', $event)"
     />
     <div v-else-if="generating" class="preview__loading" role="status" aria-live="polite">
       <div class="builder-orbit" aria-hidden="true">

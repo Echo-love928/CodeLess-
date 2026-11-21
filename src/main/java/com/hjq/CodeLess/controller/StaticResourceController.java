@@ -4,16 +4,21 @@ import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.service.*;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.HandlerMapping;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/static")
 public class StaticResourceController {
+    private static final Pattern HTML_PREAMBLE = Pattern.compile(
+            "\\A\\uFEFF?(?:\\s|<!--.*?-->)*(?:<!doctype\\s+[^>]*>)?", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private final AppService apps;
     private final UserService users;
     private final AppAccessPolicy access;
@@ -40,9 +45,19 @@ public class StaticResourceController {
             String mime = Files.probeContentType(file);
             if (file.toString().endsWith(".js")) mime = "application/javascript";
             if (mime == null) mime = "application/octet-stream";
+            Resource body = new FileSystemResource(file);
+            if (mime.equals("text/html") && "iframe".equals(request.getHeader("Sec-Fetch-Dest"))
+                    && viewer != null && app.getUserId().equals(viewer.getId())) {
+                String html = Files.readString(file);
+                var preamble = HTML_PREAMBLE.matcher(html);
+                int insertAt = preamble.lookingAt() ? preamble.end() : 0;
+                String script = "<script src=\"" + request.getContextPath() + "/visual-editor.js\"></script>";
+                body = new ByteArrayResource((html.substring(0, insertAt) + script + html.substring(insertAt))
+                        .getBytes(StandardCharsets.UTF_8));
+            }
             if (mime.startsWith("text/") || mime.equals("application/javascript") || mime.equals("application/json")) mime += "; charset=UTF-8";
             return ResponseEntity.ok().header(HttpHeaders.CONTENT_TYPE, mime)
-                    .header(HttpHeaders.VARY, "Cookie").cacheControl(CacheControl.noStore()).body(new FileSystemResource(file));
+                    .header(HttpHeaders.VARY, "Cookie", "Sec-Fetch-Dest").cacheControl(CacheControl.noStore()).body(body);
         } catch (BusinessException failure) {
             return failure(failure.getCode() == ErrorCode.FORBIDDEN_ERROR.getCode() ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.NOT_FOUND);
         } catch (Exception failure) { return failure(HttpStatus.NOT_FOUND); }
