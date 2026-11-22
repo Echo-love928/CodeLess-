@@ -3,6 +3,8 @@ package com.hjq.CodeLess.controller;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.hjq.CodeLess.ai.ratelimter.annotation.RateLimit;
+import com.hjq.CodeLess.ai.ratelimter.enums.RateLimitType;
 import com.hjq.CodeLess.annotation.AuthCheck;
 import com.hjq.CodeLess.common.BaseResponse;
 import com.hjq.CodeLess.common.DeleteRequest;
@@ -64,6 +66,7 @@ public class AppController {
      * @return 生成结果流
      */
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimit(limitType = RateLimitType.USER, rate = 5, rateInterval = 60, message = "AI 对话请求过于频繁，请稍后再试")
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
                                                        @RequestParam String message,
                                                        HttpServletRequest request) {

@@ -27,6 +27,7 @@ class AppVersionServiceTest {
     private AppVersionService service;
     private final User owner = User.builder().id(2L).build();
     private final Path snapshot = Path.of("snapshot");
+    private final Path activeDirectory = Path.of("output", "multi_file_1");
 
     @BeforeEach void setup() {
         when(manager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
@@ -34,12 +35,13 @@ class AppVersionServiceTest {
         when(repository.nextVersion(1L)).thenReturn(1);
         when(storage.saveGenerated(eq(1L), any(), anyInt(), any())).thenReturn(snapshot);
         when(storage.activate(eq(1L), eq("multi_file"), any())).thenReturn(activation);
+        when(activation.directory()).thenReturn(activeDirectory);
         when(storage.versionPath(eq(1L), eq("multi_file"), anyInt())).thenReturn(snapshot);
         service = new AppVersionService(repository, storage, generation, manager);
     }
 
     @Test void firstGenerationStartsAtOneAndCommitsSnapshot() {
-        service.saveGeneratedCode(new Object(), CodeGenTypeEnum.MULTI_FILE, 1L, "first");
+        assertEquals(activeDirectory.toFile(), service.saveGeneratedCode(new Object(), CodeGenTypeEnum.MULTI_FILE, 1L, "first"));
         verify(repository).insert(1L, 1, null, "first", "generated");
         verify(repository).setCurrent(1L, 1, false);
         verify(activation).commit();

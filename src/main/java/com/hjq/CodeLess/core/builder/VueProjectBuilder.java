@@ -53,13 +53,12 @@ public class VueProjectBuilder {
             log.error("npm run build 执行失败");
             return false;
         }
-        // 验证 dist 目录是否生成
-        File distDir = new File(projectDir, "dist");
-        if (!distDir.exists()) {
-            log.error("构建完成但 dist 目录未生成: {}", distDir.getAbsolutePath());
+        File previewEntry = new File(projectDir, "dist/index.html");
+        if (!previewEntry.isFile()) {
+            log.error("构建完成但缺少预览入口: {}", previewEntry.getAbsolutePath());
             return false;
         }
-        log.info("Vue 项目构建成功，dist 目录: {}", distDir.getAbsolutePath());
+        log.info("Vue 项目构建成功，预览入口: {}", previewEntry.getAbsolutePath());
         return true;
     }
 

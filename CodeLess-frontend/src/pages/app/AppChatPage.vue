@@ -284,6 +284,19 @@ const appendSseEvent = (event: string, assistant: ChatMessage) => {
     .join('\n')
   if (eventName === 'done' || eventName === 'stopped') return eventName
   if (eventName === 'error') throw new Error(decodeEventData(data) || '代码生成失败')
+  if (eventName === 'business-error') {
+    let errorMessage = '生成过程中出现错误'
+    try {
+      const payload = JSON.parse(data) as { message?: unknown } | null
+      if (typeof payload?.message === 'string' && payload.message.trim()) {
+        errorMessage = payload.message
+      }
+    } catch {
+      errorMessage = '服务器返回错误'
+    }
+    assistant.content = `❌ ${errorMessage}`
+    throw new Error(errorMessage)
+  }
   if (data && data !== '[DONE]') {
     const chunk = decodeEventData(data)
     const text = isVueProject.value ? decodeVueProjectChunk(chunk) : chunk
@@ -386,8 +399,10 @@ const sendMessage = async (preset?: string) => {
   await scrollToBottom(true)
   const assistant = chatMessages.value[chatMessages.value.length - 1]!
   abortController = new AbortController()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let outcome: 'done' | 'stopped' | undefined
   const consumeEvent = (event: string) => {
+    if (outcome) return
     const result = appendSseEvent(event, assistant)
     if (result) outcome = result
   }
@@ -411,8 +426,7 @@ const sendMessage = async (preset?: string) => {
       throw new Error(result.message || '生成请求失败')
     }
     generationAccepted.value = true
-    if (app.value) app.value.generationStatus = 'generating'
-    const reader = response.body.getReader()
+    reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     while (true) {
@@ -450,6 +464,10 @@ const sendMessage = async (preset?: string) => {
     scheduleMarkdownRender(assistant)
     message.error(error instanceof Error ? error.message : '生成失败，请稍后重试')
   } finally {
+    if (reader) {
+      void reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
     flushMarkdownRender()
     generating.value = false
     stopGenerationStages()
@@ -666,7 +684,7 @@ onBeforeUnmount(() => {
           <a-tag>{{ visibilityLabel(app?.visibility) }}</a-tag>
           <a-tag v-if="app?.version" color="blue">当前 V{{ app.version }}</a-tag>
           <span class="generation-status" role="status" aria-atomic="true"
-            ><GenerationStatusTag :status="app?.generationStatus"
+            ><GenerationStatusTag :status="generationAccepted ? 'generating' : app?.generationStatus"
           /></span>
           <a-tag :color="isAppOnline(app) ? 'green' : 'default'"
             >{{ getDeploymentLabel(app)

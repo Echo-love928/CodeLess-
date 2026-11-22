@@ -31,7 +31,7 @@ import dev.langchain4j.service.TokenStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.beans.factory.ObjectFactory;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -46,11 +46,13 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -59,6 +61,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.timeout;
@@ -73,6 +76,7 @@ class VueProjectGenerationTest {
         var facade = new AiCodeGeneratorFacade();
         var factory = mock(AiCodeGeneratorServiceFactory.class);
         var versions = mock(AppVersionService.class);
+        var builder = mock(VueProjectBuilder.class);
         var service = mock(AiCodeGeneratorService.class);
         var tokenStream = mock(TokenStream.class, RETURNS_SELF);
         var handle = mock(StreamingHandle.class);
@@ -91,8 +95,10 @@ class VueProjectGenerationTest {
         when(service.generateVueProjectCodeStream(appId, "prompt")).thenReturn(tokenStream);
         ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
         ReflectionTestUtils.setField(facade, "appVersionService", versions);
+        ReflectionTestUtils.setField(facade, "appGenerationService", new AppGenerationService());
+        ReflectionTestUtils.setField(facade, "vueProjectBuilder", builder);
         ReflectionTestUtils.setField(facade, "jsonMessageStreamHandler",
-                new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(), mock(ToolManager.class)));
+                new JsonMessageStreamHandler(mock(ToolManager.class)));
         ReflectionTestUtils.setField(facade, "appVersionStorage",
                 new AppVersionStorage(tempDir.resolve("output"), tempDir.resolve("versions")));
         ReflectionTestUtils.setField(facade, "vueStreamIdleTimeout", Duration.ofMillis(150));
@@ -104,12 +110,13 @@ class VueProjectGenerationTest {
         verify(handle, timeout(2000)).cancel();
         verify(versions).generationPrompt(eq(appId), eq("prompt"), any(Path.class));
         verifyNoMoreInteractions(versions);
+        verifyNoInteractions(builder);
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void generatesVueProjectThroughFileToolsAndSavesVersion(boolean recoverTruncatedCall, @TempDir Path tempDir)
-            throws Exception {
+    @CsvSource({"false, true", "true, true", "false, false"})
+    void savesVueProjectThroughFileToolsAndWaitsForBuild(boolean recoverTruncatedCall, boolean buildSucceeds,
+                                                         @TempDir Path tempDir) throws Exception {
         long appId = 1L;
         var type = CodeGenTypeEnum.VUE_PROJECT;
         String prompt = "创建一个 Vue 首页";
@@ -182,21 +189,50 @@ class VueProjectGenerationTest {
         when(repository.nextVersion(appId)).thenReturn(1);
         var transactions = mock(PlatformTransactionManager.class);
         when(transactions.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
-        var versions = new AppVersionService(repository, storage, new AppGenerationService(), transactions);
+        var generation = new AppGenerationService();
+        var versions = new AppVersionService(repository, storage, generation, transactions);
+        var builder = mock(VueProjectBuilder.class);
+        Path activeDirectory = outputRoot.resolve(type.getValue() + "_" + appId);
+        var completed = new AtomicBoolean();
+        when(builder.buildProject(activeDirectory.toString())).thenAnswer(call -> {
+            assertFalse(completed.get());
+            verify(repository).setCurrent(appId, 1, false);
+            for (var file : expectedFiles.entrySet()) {
+                assertEquals(file.getValue(), Files.readString(activeDirectory.resolve(file.getKey())), file.getKey());
+            }
+            if (buildSucceeds) {
+                Files.createDirectory(activeDirectory.resolve("dist"));
+                Files.writeString(activeDirectory.resolve("dist/index.html"), "preview");
+            }
+            return buildSucceeds;
+        });
         var facade = new AiCodeGeneratorFacade();
         ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
         ReflectionTestUtils.setField(facade, "appVersionService", versions);
         ReflectionTestUtils.setField(facade, "appVersionStorage", storage);
+        ReflectionTestUtils.setField(facade, "appGenerationService", generation);
+        ReflectionTestUtils.setField(facade, "vueProjectBuilder", builder);
 
-        List<String> messages;
+        List<String> messages = new ArrayList<>();
         try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
             var toolManager = context.getBean(ToolManager.class);
             ReflectionTestUtils.setField(factory, "toolManager", toolManager);
-            ReflectionTestUtils.setField(facade, "jsonMessageStreamHandler",
-                    new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(), toolManager));
-            messages = facade.generateAndSaveCodeStream(prompt, type, appId)
-                    .collectList().block(Duration.ofSeconds(5));
+            ReflectionTestUtils.setField(facade, "jsonMessageStreamHandler", new JsonMessageStreamHandler(toolManager));
+            var stream = generation.generate(appId, () -> facade.generateAndSaveCodeStream(prompt, type, appId),
+                            ignored -> {})
+                    .doOnNext(messages::add)
+                    .doOnComplete(() -> completed.set(true));
+            if (buildSucceeds) {
+                stream.blockLast(Duration.ofSeconds(5));
+                assertTrue(completed.get());
+                assertEquals("preview", Files.readString(activeDirectory.resolve("dist/index.html")));
+            } else {
+                var error = assertThrows(BusinessException.class, () -> stream.blockLast(Duration.ofSeconds(5)));
+                assertEquals("Vue 项目构建失败，无法预览", error.getMessage());
+                assertFalse(completed.get());
+            }
         }
+        verify(builder).buildProject(activeDirectory.toString());
 
         var events = messages.stream().map(JSONUtil::parseObj).toList();
         if (recoverTruncatedCall) {
@@ -247,10 +283,6 @@ class VueProjectGenerationTest {
                 .toList();
         assertEquals(expectedFiles.keySet().stream().map(path -> "文件写入成功: " + path).sorted().toList(), toolResults);
         assertEquals(expectedFiles, storage.readFiles(appId, type.getValue(), 1));
-        Path activeDirectory = outputRoot.resolve(type.getValue() + "_" + appId);
-        for (var file : expectedFiles.entrySet()) {
-            assertEquals(file.getValue(), Files.readString(activeDirectory.resolve(file.getKey())), file.getKey());
-        }
         verify(repository).insert(appId, 1, null, prompt, "generated");
         verify(repository).setCurrent(appId, 1, false);
     }
@@ -258,8 +290,7 @@ class VueProjectGenerationTest {
     @Test
     void formatsToolResultsWithoutBreakingTheStreamOrOverflowingChatHistory(@TempDir Path tempDir) {
         try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
-            var handler = new JsonMessageStreamHandler(mock(VueProjectBuilder.class), new AppGenerationService(),
-                    context.getBean(ToolManager.class));
+            var handler = new JsonMessageStreamHandler(context.getBean(ToolManager.class));
             String fencedSource = "```md\n示例\n```";
             var chunks = Flux.just(
                     executedTool("missingTool", "{}", "unknown"),

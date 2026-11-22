@@ -157,6 +157,8 @@ public class AppVersionStorage {
         private boolean committed;
         private Activation(Path target, Path backup) { this.target = target; this.backup = backup; }
 
+        Path directory() { return target; }
+
         public void commit() { committed = true; discard(backup); }
 
         @Override public void close() {

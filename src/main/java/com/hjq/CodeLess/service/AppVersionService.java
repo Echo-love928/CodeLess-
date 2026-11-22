@@ -45,7 +45,7 @@ public class AppVersionService {
             change.activation = storage.activate(appId, type.getValue(), snapshot);
             repository.insert(appId, version, app.getVersion() > 0 ? app.getVersion() : null, prompt, "generated");
             repository.setCurrent(appId, version, false);
-            return new File(com.hjq.CodeLess.constant.AppConstant.CODE_OUTPUT_ROOT_DIR, type.getValue() + "_" + appId);
+            return change.activation.directory().toFile();
         });
     }
 

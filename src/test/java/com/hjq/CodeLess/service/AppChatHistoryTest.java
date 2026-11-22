@@ -1,9 +1,7 @@
 package com.hjq.CodeLess.service;
 
 import com.hjq.CodeLess.ai.tools.ToolManager;
-import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
-import com.hjq.CodeLess.core.builder.VueProjectBuilder;
 import com.hjq.CodeLess.core.handler.JsonMessageStreamHandler;
 import com.hjq.CodeLess.core.handler.SimpleTextStreamHandler;
 import com.hjq.CodeLess.core.handler.StreamHandlerExecutor;
@@ -20,12 +18,10 @@ import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -37,7 +33,6 @@ class AppChatHistoryTest {
     private final ChatHistoryService history = mock(ChatHistoryService.class);
     private final AiCodeGeneratorFacade generator = mock(AiCodeGeneratorFacade.class);
     private final AppCoverGeneratorService covers = mock(AppCoverGeneratorService.class);
-    private final VueProjectBuilder vueBuilder = mock(VueProjectBuilder.class);
     private final AppGenerationService generation = new AppGenerationService();
     private final User owner = User.builder().id(2L).build();
 
@@ -47,7 +42,7 @@ class AppChatHistoryTest {
         ReflectionTestUtils.setField(service, "aiCodeGeneratorFacade", generator);
         ReflectionTestUtils.setField(service, "streamHandlerExecutor",
                 new StreamHandlerExecutor(new SimpleTextStreamHandler(),
-                        new JsonMessageStreamHandler(vueBuilder, generation, mock(ToolManager.class))));
+                        new JsonMessageStreamHandler(mock(ToolManager.class))));
         ReflectionTestUtils.setField(service, "appCoverGeneratorService", covers);
         ReflectionTestUtils.setField(service, "appGenerationService", generation);
         doReturn(App.builder().id(1L).userId(2L).codeGenType("html").build()).when(service).getById(1L);
@@ -73,17 +68,13 @@ class AppChatHistoryTest {
         order.verify(history).addChatMessage(1L, "hello world", "ai", 2L);
         order.verify(covers).generateCover(1L, type);
         verifyNoMoreInteractions(history);
-        verifyNoInteractions(vueBuilder);
     }
 
     @Test
-    void forwardsVueToolEventsAndStartsBuildAfterSavingAiTextAndToolResults() throws Exception {
+    void forwardsVueToolEventsAndSavesAiTextAndToolResultsAfterGenerationCompletes() throws Exception {
         doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
         when(covers.generateCover(1L, "vue_project")).thenReturn(Optional.empty());
         var completion = Sinks.<String>empty();
-        var build = new CompletableFuture<Boolean>();
-        String projectPath = Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_1").toString();
-        when(vueBuilder.buildProjectAsync(projectPath)).thenReturn(build);
         var events = List.of(
                 "{\"type\":\"ai_response\",\"data\":\"已生成\"}",
                 "{\"type\":\"tool_request\",\"name\":\"writeFile\",\"display\":\"[选择工具] 写入文件\"}",
@@ -95,26 +86,23 @@ class AppChatHistoryTest {
                 .thenReturn(Flux.fromIterable(events).concatWith(completion.asMono()));
 
         var response = service.chatToGenCode(1L, "generate", owner).collectList().toFuture();
-        verifyNoInteractions(vueBuilder);
+        verify(history, never()).addChatMessage(eq(1L), anyString(), eq("ai"), eq(2L));
         completion.emitEmpty(Sinks.EmitFailureHandler.FAIL_FAST);
         var received = response.get(5, TimeUnit.SECONDS);
 
-        assertFalse(build.isDone());
-        assertThrows(BusinessException.class, () -> generation.withIdleApp(1L, () -> true));
-        build.complete(false);
         assertTrue(generation.withIdleApp(1L, () -> true));
 
         assertEquals("", received.get(0));
         assertEquals(events, received.subList(1, received.size()));
-        var order = inOrder(history, vueBuilder);
+        var order = inOrder(history, covers);
         order.verify(history).addChatMessage(1L, "generate", "user", 2L);
         order.verify(history).addChatMessage(1L, "已生成\n\n[工具调用] 写入文件 src/App.vue\n\n项目。", "ai", 2L);
-        order.verify(vueBuilder).buildProjectAsync(projectPath);
+        order.verify(covers).generateCover(1L, "vue_project");
         verifyNoMoreInteractions(history);
     }
 
     @Test
-    void doesNotBuildVueProjectWhenSourceSavingFails() {
+    void recordsVueGenerationFailureAndSkipsCover() {
         doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
         var failure = new IllegalStateException("save failed");
         when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.VUE_PROJECT, 1L))
@@ -122,7 +110,8 @@ class AppChatHistoryTest {
 
         assertSame(failure, assertThrows(IllegalStateException.class,
                 () -> service.chatToGenCode(1L, "generate", owner).blockLast(Duration.ofSeconds(5))));
-        verifyNoInteractions(vueBuilder);
+        verify(history).addChatMessage(1L, "AI回复失败: save failed", "ai", 2L);
+        verifyNoInteractions(covers);
     }
 
     @Test
@@ -170,7 +159,6 @@ class AppChatHistoryTest {
         verify(history).addChatMessage(1L, "generate", "user", 2L);
         verifyNoMoreInteractions(history);
         verifyNoInteractions(covers);
-        verifyNoInteractions(vueBuilder);
         subscription.dispose();
     }
 
@@ -200,10 +188,9 @@ class AppChatHistoryTest {
     }
 
     @Test
-    void vueGenerationSavesReplyAndStartsBuildAfterSubscriberDisconnects() {
+    void vueGenerationSavesReplyAfterSubscriberDisconnects() {
         doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
         when(covers.generateCover(1L, "vue_project")).thenReturn(Optional.empty());
-        when(vueBuilder.buildProjectAsync(anyString())).thenReturn(CompletableFuture.completedFuture(true));
         var model = Sinks.many().unicast().<String>onBackpressureBuffer();
         when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.VUE_PROJECT, 1L))
                 .thenReturn(model.asFlux());
@@ -220,7 +207,6 @@ class AppChatHistoryTest {
         model.emitComplete(Sinks.EmitFailureHandler.FAIL_FAST);
 
         verify(history).addChatMessage(1L, "计划。已完成。", "ai", 2L);
-        verify(vueBuilder).buildProjectAsync(Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR, "vue_project_1").toString());
         verify(service, timeout(2000)).updateById(argThat(app -> "completed".equals(app.getGenerationStatus())));
     }
 
@@ -228,12 +214,11 @@ class AppChatHistoryTest {
     void successfulToolOnlyVueGenerationSavesCompletionForPageReload() {
         doReturn(App.builder().id(1L).userId(2L).codeGenType("vue_project").build()).when(service).getById(1L);
         when(covers.generateCover(1L, "vue_project")).thenReturn(Optional.empty());
-        when(vueBuilder.buildProjectAsync(anyString())).thenReturn(CompletableFuture.completedFuture(true));
         when(generator.generateAndSaveCodeStream("generate", CodeGenTypeEnum.VUE_PROJECT, 1L))
                 .thenReturn(Flux.just("{\"type\":\"tool_executed\"}"));
 
         service.chatToGenCode(1L, "generate", owner).blockLast(Duration.ofSeconds(5));
 
-        verify(history).addChatMessage(1L, "网站代码已生成，构建完成后可刷新预览。", "ai", 2L);
+        verify(history).addChatMessage(1L, "网站已生成，可以预览。", "ai", 2L);
     }
 }

@@ -4,11 +4,11 @@ import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -54,15 +54,24 @@ public class AppGenerationService {
         });
     }
 
-    /** 在生成流结束后继续保留应用锁，直至构建不再写入当前版本目录。 */
-    public void startVueBuild(long appId, Supplier<CompletableFuture<Boolean>> build) {
+    /** 即使构建期间收到停止请求，也要等构建退出后再释放应用锁。 */
+    public Mono<Void> completeVueBuild(long appId, Runnable build) {
         Task task = tasks.get(appId);
-        if (task == null) return;
-        synchronized (task) {
-            if (task.generation && !task.finished && !task.stopped && task.build == null) {
-                task.build = build.get();
+        if (task == null) return Mono.fromRunnable(build);
+        return Mono.fromRunnable(() -> {
+            synchronized (task) {
+                if (task.finished || task.stopped) return;
+                task.building = true;
             }
-        }
+            try {
+                build.run();
+            } finally {
+                synchronized (task) {
+                    task.building = false;
+                    if (task.finished) tasks.remove(appId, task);
+                }
+            }
+        });
     }
 
     public boolean stop(Long appId) {
@@ -94,11 +103,7 @@ public class AppGenerationService {
             try {
                 task.writeStatus.accept(status);
             } finally {
-                if (task.build == null) {
-                    tasks.remove(appId, task);
-                } else {
-                    task.build.whenComplete((result, error) -> tasks.remove(appId, task));
-                }
+                if (!task.building) tasks.remove(appId, task);
             }
         }
     }
@@ -109,7 +114,7 @@ public class AppGenerationService {
         private volatile boolean stopped;
         private boolean finished;
         private boolean generation = true;
-        private CompletableFuture<Boolean> build;
+        private boolean building;
 
         private Task(Consumer<String> writeStatus) { this.writeStatus = writeStatus; }
     }

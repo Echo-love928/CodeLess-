@@ -7,17 +7,12 @@ import com.hjq.CodeLess.ai.model.message.StreamMessageTypeEnum;
 import com.hjq.CodeLess.ai.tools.BaseTool;
 import com.hjq.CodeLess.ai.tools.ToolManager;
 import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
-import com.hjq.CodeLess.constant.AppConstant;
-import com.hjq.CodeLess.core.builder.VueProjectBuilder;
-import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
-import com.hjq.CodeLess.service.AppGenerationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -29,8 +24,6 @@ public class JsonMessageStreamHandler {
     private static final int MAX_TOOL_DETAIL_BYTES = 48 * 1024;
     private static final String OMITTED_DETAILS = "\n\n[工具调用] 后续工具详情已省略。\n\n";
 
-    private final VueProjectBuilder vueProjectBuilder;
-    private final AppGenerationService appGenerationService;
     private final ToolManager toolManager;
 
     public Flux<String> formatToolEvents(Flux<String> originFlux, VueProjectWorkspace workspace) {
@@ -73,14 +66,6 @@ public class JsonMessageStreamHandler {
             log.warn("格式化 Vue 工具结果失败，工具：{}", tool.getToolName(), error);
             return summary + "（详情无法显示）";
         }
-    }
-
-    Flux<String> buildOnComplete(Flux<String> originFlux, long appId) {
-        return originFlux.doOnComplete(() -> {
-            String projectPath = Path.of(AppConstant.CODE_OUTPUT_ROOT_DIR,
-                    CodeGenTypeEnum.VUE_PROJECT.getValue() + "_" + appId).toString();
-            appGenerationService.startVueBuild(appId, () -> vueProjectBuilder.buildProjectAsync(projectPath));
-        });
     }
 
     String extractChatText(String chunk) {

@@ -9,11 +9,13 @@ import com.hjq.CodeLess.ai.model.message.AiResponseMessage;
 import com.hjq.CodeLess.ai.model.message.ToolExecutedMessage;
 import com.hjq.CodeLess.ai.model.message.ToolRequestMessage;
 import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
+import com.hjq.CodeLess.core.builder.VueProjectBuilder;
 import com.hjq.CodeLess.core.handler.JsonMessageStreamHandler;
 import com.hjq.CodeLess.core.parser.CodeParserExecutor;
 import com.hjq.CodeLess.exception.BusinessException;
 import com.hjq.CodeLess.exception.ErrorCode;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
+import com.hjq.CodeLess.service.AppGenerationService;
 import com.hjq.CodeLess.service.AppVersionService;
 import com.hjq.CodeLess.service.AppVersionStorage;
 import dev.langchain4j.service.TokenStream;
@@ -22,7 +24,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
 import java.io.File;
+import java.nio.file.Path;
 import java.time.Duration;
 
 /**
@@ -49,6 +54,12 @@ public class AiCodeGeneratorFacade {
 
     @Resource
     private JsonMessageStreamHandler jsonMessageStreamHandler;
+
+    @Resource
+    private VueProjectBuilder vueProjectBuilder;
+
+    @Resource
+    private AppGenerationService appGenerationService;
 
     /**
      * 统一入口：根据类型生成并保存代码
@@ -115,17 +126,9 @@ public class AiCodeGeneratorFacade {
                     prompt = appVersionService.generationPrompt(appId, userMessage, directory);
                 }
                 var service = aiCodeGeneratorServiceFactory.createAiCodeGeneratorService(appId, type, workspace);
-                return jsonMessageStreamHandler.formatToolEvents(
-                                processTokenStream(service.generateVueProjectCodeStream(appId, prompt)), workspace)
-                        .concatWith(Flux.defer(() -> {
-                            // 取消时的清理必须等正在提交的版本读取完临时文件。
-                            synchronized (workspace) {
-                                if (workspace.close()) {
-                                    appVersionService.saveGeneratedCode(directory, type, appId, userMessage);
-                                }
-                            }
-                            return Flux.empty();
-                        }));
+                var tokenStream = service.generateVueProjectCodeStream(appId, prompt);
+                var events = processTokenStream(tokenStream, appId, userMessage, directory, workspace);
+                return jsonMessageStreamHandler.formatToolEvents(events, workspace);
             }).doFinally(signal -> {
                 workspace.close();
                 appVersionStorage.discard(directory);
@@ -133,8 +136,9 @@ public class AiCodeGeneratorFacade {
         });
     }
 
-    /** 将 Vue 生成过程中的模型回复和工具事件转换为 JSON 消息流。 */
-    private Flux<String> processTokenStream(TokenStream tokenStream) {
+    /** 将 Vue 事件转换为 JSON 消息流，保存并构建成功后完成。 */
+    private Flux<String> processTokenStream(TokenStream tokenStream, Long appId, String userMessage,
+                                            Path directory, VueProjectWorkspace workspace) {
         return Flux.<String>create(sink -> {
             var rememberHandle = CancellableTokenStream.trackCancellation(sink);
             tokenStream.onPartialResponseWithContext((response, context) -> {
@@ -156,7 +160,20 @@ public class AiCodeGeneratorFacade {
                     .start();
         }).timeout(vueStreamIdleTimeout, Flux.error(new BusinessException(
                 ErrorCode.OPERATION_ERROR, "Vue 生成超时，模型长时间没有输出，请重试")))
-                .filter(chunk -> !chunk.isEmpty());
+                .filter(chunk -> !chunk.isEmpty())
+                // 模型空闲超时只覆盖模型输出，版本保存和 npm 构建各自处理失败。
+                .concatWith(appGenerationService.completeVueBuild(appId, () -> {
+                    File projectDir;
+                    // 取消时的清理必须等正在提交的版本读取完临时文件。
+                    synchronized (workspace) {
+                        if (!workspace.close()) return;
+                        projectDir = appVersionService.saveGeneratedCode(
+                                directory, CodeGenTypeEnum.VUE_PROJECT, appId, userMessage);
+                    }
+                    if (!vueProjectBuilder.buildProject(projectDir.getAbsolutePath())) {
+                        throw new BusinessException(ErrorCode.OPERATION_ERROR, "Vue 项目构建失败，无法预览");
+                    }
+                }).then(Mono.empty()));
     }
 
     /**

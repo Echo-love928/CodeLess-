@@ -76,6 +76,7 @@ const mountPage = (options = {}) => {
   const exportCalls = []
   const codeRequests = []
   const downloads = []
+  let appLoaded = false
   const appCodeDownload = loadConfigModule('../src/utils/appCodeDownload.ts', {
     '@/request': {
       default: async (url, requestOptions) => {
@@ -102,9 +103,11 @@ const mountPage = (options = {}) => {
               new Blob(['# 完整历史'], { type: 'text/markdown;charset=utf-8' })),
       }
     },
-    getAppVoById: async () => ({
-      data: { code: 0, data: { ...app, downloadCount: String(downloads.length) } },
-    }),
+    getAppVoById: async () => {
+      if (appLoaded && options.failStatusRefresh) throw new Error('应用状态请求失败')
+      appLoaded = true
+      return { data: { code: 0, data: { ...app, downloadCount: String(downloads.length) } } }
+    },
     listAppChatHistory: async (params) => {
       historyCalls.push({ ...params })
       if (options.failHistory && historyCalls.length === 1) throw new Error('历史加载失败')
@@ -398,6 +401,62 @@ test('Vue generation shows tool progress and includes formatted results in the r
     assert.equal(page.previewCalls.at(-1).href, page.state.previewUrl)
   } finally {
     page.mounted.unmount()
+  }
+})
+
+test('a business error shows the server message and cancels the stream before EOF', async () => {
+  const errorMessage = 'AI 对话请求过于频繁，请稍后再试'
+  let streamController
+  let cancelled = false
+  const generationBody = new ReadableStream({
+    start(controller) {
+      streamController = controller
+      controller.enqueue(
+        new TextEncoder().encode(
+          `event: business-error\r\ndata: ${JSON.stringify({ error: true, message: errorMessage })}\r\n\r\n` +
+            'event: done\r\ndata: {}\r\n\r\n',
+        ),
+      )
+    },
+    cancel() {
+      cancelled = true
+    },
+  })
+  const page = mountPage({ initPrompt: '', generationBody, failStatusRefresh: true })
+  try {
+    await settle(() => !page.state.initializing)
+    const generation = page.state.sendMessage('生成网站')
+    await settle(() => cancelled)
+    await generation
+
+    assert.equal(page.state.chatMessages.at(-1).content, `❌ ${errorMessage}`)
+    assert.deepEqual(page.errors, [errorMessage])
+    assert.equal(page.state.isGenerating, false)
+    assert.equal(page.state.generationAccepted, false)
+    assert.equal(page.state.previewVersion, 0)
+    assert.equal(page.state.previewReady, true)
+  } finally {
+    if (!cancelled) streamController.close()
+    page.mounted.unmount()
+  }
+})
+
+test('a business error without a usable message shows a fallback', async () => {
+  for (const [data, errorMessage] of [
+    ['{"message":""}', '生成过程中出现错误'],
+    ['{invalid json}', '服务器返回错误'],
+  ]) {
+    const page = mountPage({ initPrompt: '', stream: `event: business-error\ndata: ${data}\n\n` })
+    try {
+      await settle(() => !page.state.initializing)
+      await page.state.sendMessage('生成网站')
+
+      assert.equal(page.state.chatMessages.at(-1).content, `❌ ${errorMessage}`)
+      assert.deepEqual(page.errors, [errorMessage])
+      assert.equal(page.state.isGenerating, false)
+    } finally {
+      page.mounted.unmount()
+    }
   }
 })
 
