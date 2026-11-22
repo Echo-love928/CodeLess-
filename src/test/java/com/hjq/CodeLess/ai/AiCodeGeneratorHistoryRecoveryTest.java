@@ -1,6 +1,8 @@
 package com.hjq.CodeLess.ai;
 
+import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.model.entity.ChatHistory;
+import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.hjq.CodeLess.service.ChatHistoryService;
 import com.hjq.CodeLess.service.impl.ChatHistoryServiceImpl;
 import com.mybatisflex.core.query.QueryWrapper;
@@ -12,10 +14,17 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -31,6 +40,8 @@ class AiCodeGeneratorHistoryRecoveryTest {
     private final List<ChatRequest> requests = new ArrayList<>();
     private final ChatHistoryServiceImpl history = spy(new ChatHistoryServiceImpl());
     private RedisChatMemoryStore store;
+    private int streamingModelCount;
+    private int reasoningModelCount;
 
     @BeforeEach
     void setUp() {
@@ -46,21 +57,60 @@ class AiCodeGeneratorHistoryRecoveryTest {
 
     private AnnotationConfigApplicationContext context() {
         var context = new AnnotationConfigApplicationContext();
-        context.registerBean("chatModel", ChatModel.class, () -> new ChatModel() {
+        context.registerBean("openAiChatModel", ChatModel.class, () -> new ChatModel() {
             @Override
             public ChatResponse doChat(ChatRequest request) {
                 requests.add(request);
                 return ChatResponse.builder().aiMessage(AiMessage.from("{\"htmlCode\":\"ok\",\"description\":\"ok\"}")).build();
             }
         });
-        context.registerBean("openAiStreamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
-        context.registerBean("reasoningStreamingChatModel", StreamingChatModel.class, () -> mock(StreamingChatModel.class));
+        context.registerBean("streamingChatModelPrototype", StreamingChatModel.class, () -> {
+            streamingModelCount++;
+            return new StreamingChatModel() {
+                @Override
+                public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
+                    handler.onPartialResponse("ok");
+                    handler.onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.from("ok")).build());
+                }
+            };
+        }, definition -> definition.setScope(ConfigurableBeanFactory.SCOPE_PROTOTYPE));
+        context.registerBean("reasoningStreamingChatModelPrototype", StreamingChatModel.class, () -> {
+            reasoningModelCount++;
+            return mock(StreamingChatModel.class);
+        }, definition -> definition.setScope(ConfigurableBeanFactory.SCOPE_PROTOTYPE));
         context.registerBean("redisChatMemoryStore", RedisChatMemoryStore.class, () -> store);
         context.getBeanFactory().registerSingleton("chatHistoryService", history);
         context.scan("com.hjq.CodeLess.ai.tools");
         context.register(AiCodeGeneratorServiceFactory.class);
         context.refresh();
         return context;
+    }
+
+    @ParameterizedTest
+    @EnumSource(CodeGenTypeEnum.class)
+    void factoryGetsANewStreamingModelForEachGeneration(CodeGenTypeEnum type, @TempDir Path project) {
+        try (var context = context()) {
+            var factory = context.getBean(AiCodeGeneratorServiceFactory.class);
+            var workspace = new VueProjectWorkspace(project);
+            factory.createAiCodeGeneratorService(APP_ID, type, workspace);
+            factory.createAiCodeGeneratorService(APP_ID, type, workspace);
+
+            boolean vue = type == CodeGenTypeEnum.VUE_PROJECT;
+            assertEquals(vue ? 0 : 2, streamingModelCount);
+            assertEquals(vue ? 2 : 0, reasoningModelCount);
+        }
+    }
+
+    @Test
+    void defaultServiceGetsANewStreamingModelForEachCall() {
+        doReturn(List.of()).when(history).list(any(QueryWrapper.class));
+        try (var context = context()) {
+            var service = context.getBean(AiCodeGeneratorService.class);
+            assertEquals("ok", service.generateHtmlCodeStream(APP_ID, "HTML").blockLast(Duration.ofSeconds(5)));
+            assertEquals("ok", service.generateMultiFileCodeStream(APP_ID, "Multi-file").blockLast(Duration.ofSeconds(5)));
+            assertEquals(2, streamingModelCount);
+            assertEquals(0, reasoningModelCount);
+        }
     }
 
     @Test

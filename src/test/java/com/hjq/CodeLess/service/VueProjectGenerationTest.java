@@ -33,6 +33,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.beans.factory.ObjectFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
@@ -168,7 +169,8 @@ class VueProjectGenerationTest {
             return null;
         }).when(redis).updateMessages(eq(appId), anyList());
         var factory = new AiCodeGeneratorServiceFactory();
-        ReflectionTestUtils.setField(factory, "reasoningStreamingChatModel", model);
+        ObjectFactory<StreamingChatModel> reasoningModelFactory = () -> model;
+        ReflectionTestUtils.setField(factory, "reasoningStreamingChatModelFactory", reasoningModelFactory);
         ReflectionTestUtils.setField(factory, "redisChatMemoryStore", redis);
         ReflectionTestUtils.setField(factory, "chatHistoryService", mock(ChatHistoryService.class));
 

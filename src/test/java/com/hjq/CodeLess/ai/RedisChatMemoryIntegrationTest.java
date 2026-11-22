@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.springframework.beans.factory.ObjectFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 import redis.clients.jedis.JedisPooled;
 
@@ -47,7 +48,7 @@ class RedisChatMemoryIntegrationTest {
         ReflectionTestUtils.setField(factory, "redisChatMemoryStore", store);
         ReflectionTestUtils.setField(factory, "chatHistoryService", history);
         ReflectionTestUtils.setField(factory, "chatModel", mock(ChatModel.class));
-        ReflectionTestUtils.setField(factory, "streamingChatModel", new StreamingChatModel() {
+        ObjectFactory<StreamingChatModel> streamingModelFactory = () -> new StreamingChatModel() {
             @Override
             public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
                 requests.add(request);
@@ -55,7 +56,8 @@ class RedisChatMemoryIntegrationTest {
                 handler.onPartialResponse(reply);
                 handler.onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.from(reply)).build());
             }
-        });
+        };
+        ReflectionTestUtils.setField(factory, "streamingChatModelFactory", streamingModelFactory);
         ai = factory.aiCodeGeneratorService();
     }
 

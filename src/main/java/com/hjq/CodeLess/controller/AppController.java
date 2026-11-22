@@ -245,7 +245,10 @@ public class AppController {
     public BaseResponse<Page<AppVO>> listGoodAppVOByPage(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
         User viewer = userService.getLoginUserOptional(request);
         limitBrowse(request, viewer, "search", 60);
-        return ResultUtils.success(toViews(appSearchService.search(appQueryRequest, viewer, AppSearchService.Scope.PUBLIC, true), viewer));
+        Page<App> page = appQueryRequest != null && appQueryRequest.getPageNum() <= 10
+                ? appSearchService.loadFeaturedPage(appQueryRequest, appSearchService.searchFeaturedIds(appQueryRequest))
+                : appSearchService.search(appQueryRequest, viewer, AppSearchService.Scope.PUBLIC, true);
+        return ResultUtils.success(toViews(page, viewer));
     }
 
     /**

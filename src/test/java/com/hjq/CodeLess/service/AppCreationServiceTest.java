@@ -19,10 +19,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -30,13 +33,13 @@ import static org.mockito.Mockito.*;
 class AppCreationServiceTest {
     private static final long APP_ID = 1990000000000000001L;
     private static final User OWNER = User.builder().id(2L).build();
-    private final AiCodeGenTypeRoutingService routing = mock(AiCodeGenTypeRoutingService.class);
+    private final AiCodeGenTypeRoutingServiceFactory routingFactory = mock(AiCodeGenTypeRoutingServiceFactory.class);
     private final AppNameGeneratorService naming = mock(AppNameGeneratorService.class);
     private final AppServiceImpl service = spy(new AppServiceImpl());
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(service, "aiCodeGenTypeRoutingService", routing);
+        ReflectionTestUtils.setField(service, "aiCodeGenTypeRoutingServiceFactory", routingFactory);
         ReflectionTestUtils.setField(service, "appNameGeneratorService", naming);
         ReflectionTestUtils.setField(service, "appMetadataService", mock(AppMetadataService.class, CALLS_REAL_METHODS));
         when(naming.generateName("创建一个页面")).thenReturn("模型生成的应用名称");
@@ -56,14 +59,8 @@ class AppCreationServiceTest {
         var controller = new AppController();
         ReflectionTestUtils.setField(controller, "userService", users);
         ReflectionTestUtils.setField(controller, "appService", service);
-        var factory = new AiCodeGenTypeRoutingServiceFactory();
-        ReflectionTestUtils.setField(factory, "chatModel", new ChatModel() {
-            @Override
-            public ChatResponse doChat(ChatRequest request) {
-                return ChatResponse.builder().aiMessage(AiMessage.from(type.name())).build();
-            }
-        });
-        ReflectionTestUtils.setField(service, "aiCodeGenTypeRoutingService", factory.aiCodeGenTypeRoutingService());
+        var factory = new AiCodeGenTypeRoutingServiceFactory(() -> routingModel(type));
+        ReflectionTestUtils.setField(service, "aiCodeGenTypeRoutingServiceFactory", factory);
 
         var response = controller.addApp(createRequest(), request);
 
@@ -83,8 +80,37 @@ class AppCreationServiceTest {
     }
 
     @Test
+    void defaultRouterUsesANewDedicatedModelForEachCall() {
+        var created = new AtomicInteger();
+        try (var context = new AnnotationConfigApplicationContext()) {
+            context.registerBean("openAiChatModel", ChatModel.class, () -> routingModel(CodeGenTypeEnum.VUE_PROJECT));
+            context.registerBean("routingChatModelPrototype", ChatModel.class,
+                    () -> routingModel(created.getAndIncrement() == 0 ? CodeGenTypeEnum.HTML : CodeGenTypeEnum.MULTI_FILE),
+                    definition -> definition.setScope(ConfigurableBeanFactory.SCOPE_PROTOTYPE));
+            context.register(AiCodeGenTypeRoutingServiceFactory.class);
+            context.refresh();
+
+            var router = context.getBean(AiCodeGenTypeRoutingService.class);
+            assertEquals(0, created.get());
+            assertEquals(CodeGenTypeEnum.HTML, router.routeCodeGenType("单页"));
+            assertEquals(CodeGenTypeEnum.MULTI_FILE, router.routeCodeGenType("原生多文件"));
+            assertEquals(2, created.get());
+        }
+    }
+
+    @Test
     void routerFailureFallsBackToVue() {
+        var routing = mock(AiCodeGenTypeRoutingService.class);
+        when(routingFactory.createAiCodeGenTypeRoutingService()).thenReturn(routing);
         when(routing.routeCodeGenType("创建一个页面")).thenThrow(new IllegalArgumentException("invalid model response"));
+
+        assertEquals(APP_ID, service.createApp(createRequest(), OWNER));
+        assertEquals(CodeGenTypeEnum.VUE_PROJECT.getValue(), savedApp().getCodeGenType());
+    }
+
+    @Test
+    void routerCreationFailureFallsBackToVue() {
+        when(routingFactory.createAiCodeGenTypeRoutingService()).thenThrow(new IllegalStateException("model unavailable"));
 
         assertEquals(APP_ID, service.createApp(createRequest(), OWNER));
         assertEquals(CodeGenTypeEnum.VUE_PROJECT.getValue(), savedApp().getCodeGenType());
@@ -97,7 +123,7 @@ class AppCreationServiceTest {
 
         var error = assertThrows(BusinessException.class, () -> service.createApp(addRequest, OWNER));
         assertEquals(ErrorCode.PARAMS_ERROR.getCode(), error.getCode());
-        verifyNoInteractions(naming, routing);
+        verifyNoInteractions(naming, routingFactory);
         verify(service, never()).save(any(App.class));
     }
 
@@ -105,6 +131,15 @@ class AppCreationServiceTest {
         var capture = ArgumentCaptor.forClass(App.class);
         verify(service).save(capture.capture());
         return capture.getValue();
+    }
+
+    private static ChatModel routingModel(CodeGenTypeEnum type) {
+        return new ChatModel() {
+            @Override
+            public ChatResponse doChat(ChatRequest request) {
+                return ChatResponse.builder().aiMessage(AiMessage.from(type.name())).build();
+            }
+        };
     }
 
     private AppAddRequest createRequest() {

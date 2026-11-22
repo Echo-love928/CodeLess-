@@ -4,7 +4,7 @@ import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
-import com.hjq.CodeLess.ai.AiCodeGenTypeRoutingService;
+import com.hjq.CodeLess.ai.AiCodeGenTypeRoutingServiceFactory;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
 import com.hjq.CodeLess.core.builder.VueProjectBuilder;
@@ -64,7 +64,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     @Resource
     private AppNameGeneratorService appNameGeneratorService;
     @Resource
-    private AiCodeGenTypeRoutingService aiCodeGenTypeRoutingService;
+    private AiCodeGenTypeRoutingServiceFactory aiCodeGenTypeRoutingServiceFactory;
 
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
@@ -128,7 +128,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
     }
 
     private CodeGenTypeEnum routeCodeGenType(String initPrompt) {
-        return Mono.fromCallable(() -> aiCodeGenTypeRoutingService.routeCodeGenType(initPrompt))
+        return Mono.fromCallable(() -> {
+                    var routingService = aiCodeGenTypeRoutingServiceFactory.createAiCodeGenTypeRoutingService();
+                    return routingService.routeCodeGenType(initPrompt);
+                })
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(Duration.ofSeconds(8))
                 .onErrorResume(error -> {

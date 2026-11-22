@@ -15,8 +15,14 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolErrorHandlerResult;
 import jakarta.annotation.Resource;
+import org.springframework.beans.factory.ObjectFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
+import org.springframework.context.annotation.ScopedProxyMode;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -24,14 +30,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AiCodeGeneratorServiceFactory {
     private static final int MAX_VUE_TOOL_ARGUMENT_RETRIES = 2;
 
-    @Resource
+    @Resource(name = "openAiChatModel")
     private ChatModel chatModel;
 
-    @Resource(name = "openAiStreamingChatModel")
-    private StreamingChatModel streamingChatModel;
+    @Autowired
+    @Qualifier("streamingChatModelPrototype")
+    private ObjectFactory<StreamingChatModel> streamingChatModelFactory;
 
-    @Resource(name = "reasoningStreamingChatModel")
-    private StreamingChatModel reasoningStreamingChatModel;
+    @Autowired
+    @Qualifier("reasoningStreamingChatModelPrototype")
+    private ObjectFactory<StreamingChatModel> reasoningStreamingChatModelFactory;
 
     @Resource
     private RedisChatMemoryStore redisChatMemoryStore;
@@ -43,6 +51,7 @@ public class AiCodeGeneratorServiceFactory {
     private ToolManager toolManager;
 
     @Bean
+    @Scope(value = ConfigurableBeanFactory.SCOPE_PROTOTYPE, proxyMode = ScopedProxyMode.INTERFACES)
     public AiCodeGeneratorService aiCodeGeneratorService() {
         return buildDefaultService(appChatMemoryProvider(false));
     }
@@ -63,7 +72,7 @@ public class AiCodeGeneratorServiceFactory {
             case VUE_PROJECT -> {
                 var argumentErrors = new AtomicInteger();
                 yield AiServices.builder(AiCodeGeneratorService.class)
-                        .streamingChatModel(reasoningStreamingChatModel)
+                        .streamingChatModel(reasoningStreamingChatModelFactory.getObject())
                         .chatMemoryProvider(memoryProvider)
                         .tools(toolManager.getAllTools(workspace))
                         .toolArgumentsErrorHandler((error, context) -> {
@@ -85,13 +94,15 @@ public class AiCodeGeneratorServiceFactory {
                         .build();
             }
             case HTML, MULTI_FILE -> buildDefaultService(memoryProvider);
+            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "不支持的代码生成类型: " + codeGenType.getValue());
         };
     }
 
     private AiCodeGeneratorService buildDefaultService(ChatMemoryProvider memoryProvider) {
         return AiServices.builder(AiCodeGeneratorService.class)
                 .chatModel(chatModel)
-                .streamingChatModel(streamingChatModel)
+                .streamingChatModel(streamingChatModelFactory.getObject())
                 .chatMemoryProvider(memoryProvider)
                 .build();
     }

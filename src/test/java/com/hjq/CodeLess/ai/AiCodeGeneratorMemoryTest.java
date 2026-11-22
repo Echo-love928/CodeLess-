@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.beans.factory.ObjectFactory;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -75,7 +76,7 @@ class AiCodeGeneratorMemoryTest {
                 return ChatResponse.builder().aiMessage(AiMessage.from(JSON_REPLY)).build();
             }
         });
-        ReflectionTestUtils.setField(result, "streamingChatModel", new StreamingChatModel() {
+        ObjectFactory<StreamingChatModel> streamingModelFactory = () -> new StreamingChatModel() {
             @Override
             public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
                 requests.add(request);
@@ -83,7 +84,8 @@ class AiCodeGeneratorMemoryTest {
                 handler.onPartialResponse(text);
                 handler.onCompleteResponse(ChatResponse.builder().aiMessage(AiMessage.from(text)).build());
             }
-        });
+        };
+        ReflectionTestUtils.setField(result, "streamingChatModelFactory", streamingModelFactory);
         return result;
     }
 
@@ -127,7 +129,7 @@ class AiCodeGeneratorMemoryTest {
                                 {"relativeFilePath":"obsolete.txt"}
                                 """))
         );
-        ReflectionTestUtils.setField(factory, "reasoningStreamingChatModel", new StreamingChatModel() {
+        ObjectFactory<StreamingChatModel> reasoningModelFactory = () -> new StreamingChatModel() {
             @Override
             public void doChat(ChatRequest request, StreamingChatResponseHandler handler) {
                 int round = requests.size();
@@ -135,7 +137,8 @@ class AiCodeGeneratorMemoryTest {
                 var reply = round < batches.size() ? AiMessage.from(batches.get(round)) : AiMessage.from("done");
                 handler.onCompleteResponse(ChatResponse.builder().aiMessage(reply).build());
             }
-        });
+        };
+        ReflectionTestUtils.setField(factory, "reasoningStreamingChatModelFactory", reasoningModelFactory);
         try (var context = new AnnotationConfigApplicationContext("com.hjq.CodeLess.ai.tools")) {
             var manager = context.getBean(ToolManager.class);
             ReflectionTestUtils.setField(factory, "toolManager", manager);

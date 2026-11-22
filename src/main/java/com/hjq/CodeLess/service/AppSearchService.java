@@ -7,8 +7,10 @@ import com.hjq.CodeLess.model.entity.App;
 import com.hjq.CodeLess.model.entity.User;
 import com.hjq.CodeLess.model.enums.CodeGenTypeEnum;
 import com.mybatisflex.core.paginate.Page;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import java.util.*;
 
@@ -16,11 +18,44 @@ import java.util.*;
 public class AppSearchService {
     public enum Scope { PUBLIC, MINE, ADMIN }
     private static final Set<String> SORTS = Set.of("id", "appName", "createTime", "updateTime", "priority", "version");
+    private static final String ACTIVE_FILTER = " where isDelete=0";
+    private static final String PUBLIC_FILTER = " and visibility='public'";
+    private static final String FEATURED_FILTER = " and priority=99 and featureStatus='approved'";
     private final JdbcTemplate jdbc;
     private final AppAccessPolicy access;
     public AppSearchService(JdbcTemplate jdbc, AppAccessPolicy access) { this.jdbc = jdbc; this.access = access; }
 
     public Page<App> search(AppQueryRequest query, User viewer, Scope scope, boolean featured) {
+        return search(query, viewer, scope, featured, "*", BeanPropertyRowMapper.newInstance(App.class));
+    }
+
+    @Cacheable(value = "good_app_page",
+            key = "T(com.hjq.CodeLess.utils.CacheKeyUtils).generateKey(#p0)",
+            condition = "#p0 != null && #p0.pageNum <= 10")
+    public Page<Long> searchFeaturedIds(AppQueryRequest query) {
+        return search(query, null, Scope.PUBLIC, true, "id", (row, index) -> row.getLong("id"));
+    }
+
+    public Page<App> loadFeaturedPage(AppQueryRequest query, Page<Long> candidates) {
+        List<Long> ids = candidates.getRecords();
+        if (ids.isEmpty()) {
+            return new Page<>(candidates.getPageNumber(), candidates.getPageSize(), candidates.getTotalRow());
+        }
+
+        // 缓存命中时从数据库重新确认应用仍可在公开精选列表展示。
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        List<App> apps = jdbc.query("select * from app" + ACTIVE_FILTER + PUBLIC_FILTER + FEATURED_FILTER
+                        + " and id in (" + placeholders + ")", BeanPropertyRowMapper.newInstance(App.class), ids.toArray());
+        if (apps.size() != ids.size()) {
+            return search(query, null, Scope.PUBLIC, true);
+        }
+        Map<Long, App> byId = new HashMap<>();
+        apps.forEach(app -> byId.put(app.getId(), app));
+        return candidates.map(byId::get);
+    }
+
+    private <T> Page<T> search(AppQueryRequest query, User viewer, Scope scope, boolean featured,
+                               String columns, RowMapper<T> rowMapper) {
         if (query == null) throw invalid("请求不能为空");
         if (scope == Scope.ADMIN && !access.isAdmin(viewer)) throw new BusinessException(ErrorCode.NO_AUTH_ERROR);
         if (scope == Scope.MINE && viewer == null) throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
@@ -33,10 +68,10 @@ public class AppSearchService {
         String direction = query.getSortOrder();
         if (direction != null && !Set.of("ascend", "descend").contains(direction)) throw invalid("不支持的排序方向");
         List<Object> args = new ArrayList<>();
-        StringBuilder where = new StringBuilder(" where isDelete=0");
-        if (scope == Scope.PUBLIC) where.append(" and visibility='public'");
+        StringBuilder where = new StringBuilder(ACTIVE_FILTER);
+        if (scope == Scope.PUBLIC) where.append(PUBLIC_FILTER);
         if (scope == Scope.MINE) { where.append(" and userId=?"); args.add(viewer.getId()); }
-        if (featured) where.append(" and priority=99 and featureStatus='approved'");
+        if (featured) where.append(FEATURED_FILTER);
         if (query.getPriority() != null) { where.append(" and priority=?"); args.add(query.getPriority()); }
         if (query.getId() != null) {
             if (query.getId() <= 0) throw invalid("应用 ID 无效");
@@ -69,10 +104,10 @@ public class AppSearchService {
         long visibleTotal = scope == Scope.PUBLIC ? Math.min(total == null ? 0 : total, 200) : total == null ? 0 : total;
         int limit = scope == Scope.PUBLIC ? (int) Math.min(size, 200 - offset) : size;
         List<Object> pageArgs = new ArrayList<>(args); pageArgs.add(limit); pageArgs.add(offset);
-        List<App> apps = jdbc.query("select * from app" + where + " order by `" + sort + "` "
+        List<T> records = jdbc.query("select " + columns + " from app" + where + " order by `" + sort + "` "
                 + ("ascend".equals(direction) ? "asc" : "desc") + ",id desc limit ? offset ?",
-                BeanPropertyRowMapper.newInstance(App.class), pageArgs.toArray());
-        Page<App> result = new Page<>(page, size, visibleTotal); result.setRecords(apps); return result;
+                rowMapper, pageArgs.toArray());
+        return new Page<>(records, page, size, visibleTotal);
     }
 
     private void like(StringBuilder sql, List<Object> args, String column, String value) {
