@@ -1,5 +1,6 @@
 package com.hjq.CodeLess.ai;
 
+import com.hjq.CodeLess.ai.guardail.PromptSafetyInputGuardrail;
 import com.hjq.CodeLess.ai.tools.ToolManager;
 import com.hjq.CodeLess.ai.tools.VueProjectWorkspace;
 import com.hjq.CodeLess.exception.BusinessException;
@@ -91,6 +92,8 @@ public class AiCodeGeneratorServiceFactory {
                         })
                         .hallucinatedToolNameStrategy(request -> ToolExecutionResultMessage.from(
                                 request, "Error: there is no tool called " + request.name()))
+                        .maxSequentialToolsInvocations(20)
+                        .inputGuardrails(new PromptSafetyInputGuardrail())
                         .build();
             }
             case HTML, MULTI_FILE -> buildDefaultService(memoryProvider);

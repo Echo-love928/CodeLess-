@@ -5,6 +5,7 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.hjq.CodeLess.ai.AiCodeGenTypeRoutingServiceFactory;
+import com.hjq.CodeLess.ai.guardail.PromptSafetyInputGuardrail;
 import com.hjq.CodeLess.constant.AppConstant;
 import com.hjq.CodeLess.core.AiCodeGeneratorFacade;
 import com.hjq.CodeLess.core.builder.VueProjectBuilder;
@@ -161,7 +162,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的代码生成类型");
         }
-        return appGenerationService.generate(appId, () -> {
+        boolean vueProject = codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT;
+        Flux<String> generation = appGenerationService.generate(appId, () -> {
             // 5. 生成任务注册成功后，添加用户消息到对话历史。
             chatHistoryService.addChatMessage(appId, message, ChatHistoryMessageTypeEnum.USER.getValue(), loginUser.getId());
             // 6. 调用 AI 生成代码，由执行器按生成类型记录回复。
@@ -173,7 +175,12 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App>  implements AppS
                     .subscribeOn(Schedulers.boundedElastic());
             // Flush SSE headers after task registration so stop is available before the first model token.
             return Flux.just("").concatWith(handledStream).concatWith(coverTask);
-        }, status -> updateGenerationStatus(appId, status), codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT);
+        }, status -> updateGenerationStatus(appId, status), vueProject);
+        if (vueProject) {
+            return generation;
+        }
+        // 提前拒绝不合规输入，避免其在对话记忆恢复时重新进入模型。
+        return Mono.fromRunnable(() -> PromptSafetyInputGuardrail.requireSafeInput(message)).thenMany(generation);
     }
 
     private synchronized void updateGenerationStatus(Long appId, String status) {

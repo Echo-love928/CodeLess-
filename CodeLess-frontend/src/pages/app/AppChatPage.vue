@@ -283,7 +283,11 @@ const appendSseEvent = (event: string, assistant: ChatMessage) => {
     .map((line) => line.slice(5).trimStart())
     .join('\n')
   if (eventName === 'done' || eventName === 'stopped') return eventName
-  if (eventName === 'error') throw new Error(decodeEventData(data) || '代码生成失败')
+  if (eventName === 'error') {
+    const errorMessage = decodeEventData(data) || '代码生成失败'
+    assistant.content ||= `❌ ${errorMessage}`
+    throw new Error(errorMessage)
+  }
   if (eventName === 'business-error') {
     let errorMessage = '生成过程中出现错误'
     try {

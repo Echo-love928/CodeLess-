@@ -3,6 +3,7 @@ package com.hjq.CodeLess.core;
 import cn.hutool.json.JSONUtil;
 import com.hjq.CodeLess.ai.AiCodeGeneratorService;
 import com.hjq.CodeLess.ai.AiCodeGeneratorServiceFactory;
+import com.hjq.CodeLess.ai.guardail.PromptSafetyInputGuardrail;
 import com.hjq.CodeLess.ai.model.HtmlCodeResult;
 import com.hjq.CodeLess.ai.model.MultiFileCodeResult;
 import com.hjq.CodeLess.ai.model.message.AiResponseMessage;
@@ -73,13 +74,14 @@ public class AiCodeGeneratorFacade {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "生成类型为空");
         }
-        String generationPrompt = appVersionService.generationPrompt(appId, userMessage);
         return switch (codeGenTypeEnum) {
             case HTML -> {
+                String generationPrompt = validatedGenerationPrompt(appId, userMessage);
                 HtmlCodeResult result = aiCodeGeneratorService.generateHtmlCode(appId, generationPrompt);
                 yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
+                String generationPrompt = validatedGenerationPrompt(appId, userMessage);
                 MultiFileCodeResult result = aiCodeGeneratorService.generateMultiFileCode(appId, generationPrompt);
                 yield appVersionService.saveGeneratedCode(result, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
@@ -102,16 +104,21 @@ public class AiCodeGeneratorFacade {
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateHtmlCodeTokenStream(appId, appVersionService.generationPrompt(appId, userMessage))));
+                        aiCodeGeneratorService.generateHtmlCodeTokenStream(appId, validatedGenerationPrompt(appId, userMessage))));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId, userMessage);
             }
             case MULTI_FILE -> {
                 Flux<String> codeStream = Flux.defer(() -> CancellableTokenStream.toFlux(
-                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(appId, appVersionService.generationPrompt(appId, userMessage))));
+                        aiCodeGeneratorService.generateMultiFileCodeTokenStream(appId, validatedGenerationPrompt(appId, userMessage))));
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, userMessage);
             }
             case VUE_PROJECT -> generateVueProjectStream(userMessage, appId);
         };
+    }
+
+    private String validatedGenerationPrompt(Long appId, String userMessage) {
+        PromptSafetyInputGuardrail.requireSafeInput(userMessage);
+        return appVersionService.generationPrompt(appId, userMessage);
     }
 
     private Flux<String> generateVueProjectStream(String userMessage, Long appId) {
